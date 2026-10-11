@@ -20,47 +20,10 @@
 #include <thread>
 
 #include "overlay.h"
+#include "ring.h"
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-}
 
 using winrt::com_ptr;
-
-inline void CheckAv(int r, const char* what) {
-  if (r >= 0) return;
-  char buf[AV_ERROR_MAX_STRING_SIZE];
-  av_strerror(r, buf, sizeof buf);
-  throw std::runtime_error(std::format("{}: {}", what, buf));
-}
-
-// Encoded packets of every track, trimmed to the clip length. Times are relative to session start.
-class PacketRing {
- public:
-  ~PacketRing();
-  int AddTrack(std::string title, const AVCodecContext* enc, bool video);
-  void SetKeepSeconds(int s);
-  // Moves every finished packet out of `enc` into `track`.
-  void Drain(int track, AVCodecContext* enc);
-  // Writes [end_us - seconds, end_us] to an MP4. Returns "" or an error.
-  std::string Export(int64_t end_us, int seconds, const std::filesystem::path& file);
-
- private:
-  struct Track {
-    std::string title;
-    AVCodecParameters* par;
-    AVRational tb;
-    bool video;
-    std::deque<AVPacket*> pkts;
-  };
-  static int64_t Us(const Track& t, int64_t ts) { return av_rescale_q(ts, t.tb, {1, 1000000}); }
-  void Evict(int64_t now_us);
-
-  std::mutex m_;
-  std::vector<std::unique_ptr<Track>> tracks_;
-  int64_t keep_us_ = 0;
-};
 
 // WGC capture of one window -> NV12 on the GPU -> hardware H.264 at a steady frame rate.
 class VideoCapture {

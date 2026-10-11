@@ -6,11 +6,7 @@
 #include <string>
 #include <vector>
 
-void LogLine(const std::string& line);
-template <class... A>
-void Log(std::format_string<A...> f, A&&... a) {
-  LogLine(std::format(f, std::forward<A>(a)...));
-}
+#include "log.h"
 
 std::string Utf8(std::wstring_view w);
 std::wstring Wide(std::string_view s);
