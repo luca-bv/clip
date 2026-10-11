@@ -20,9 +20,10 @@ namespace {
 enum : UINT { WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED };
 enum : UINT {
   ID_SAVE = 1, ID_PAUSE, ID_OPEN_FOLDER, ID_OPEN_CONFIG, ID_QUIT, ID_NEVER, ID_ALWAYS, ID_GAME_AUDIO, ID_MIC,
-  ID_SHORTCUT, ID_OVERLAY,
+  ID_SHORTCUT, ID_OVERLAY, ID_OVERLAY_EDIT,
   ID_LENGTH = 100,  // + index into kLengths
   ID_APP = 200,     // + index into g.menu_apps
+  ID_PRESET = 900,  // + index into OverlayPresets()
 };
 enum : UINT_PTR { kReloadTimer = 1, kSyncTimer };
 constexpr int kHotkey = 1;
@@ -181,6 +182,16 @@ Config ParseConfig(const std::string& text) {
   ov.mouse_sensitivity = std::clamp(float(o["mouse_sensitivity"].value_or(double(ov.mouse_sensitivity))), 0.01f, 100.f);
   ov.mouse_trail_length = std::clamp(float(o["mouse_trail_length"].value_or(double(ov.mouse_trail_length))), 0.f, 100.f);
   ov.mouse_trail_ms = std::clamp(o["mouse_trail_ms"].value_or(ov.mouse_trail_ms), 1, 10000);
+  ov.trail_width = std::clamp(float(o["trail_width"].value_or(double(ov.trail_width))), 0.1f, 10.f);
+  ov.roundness = std::clamp(float(o["roundness"].value_or(double(ov.roundness))), 0.f, 0.5f);
+  ov.idle_color = o["key_color"].value_or(ov.idle_color);
+  ov.pressed_color = o["pressed_color"].value_or(ov.pressed_color);
+  ov.text_color = o["text_color"].value_or(ov.text_color);
+  ov.pressed_text_color = o["pressed_text_color"].value_or(ov.pressed_text_color);
+  ov.border_color = o["border_color"].value_or(ov.border_color);
+  ov.trail_color = o["trail_color"].value_or(ov.trail_color);
+  ov.click_color = o["click_color"].value_or(ov.click_color);
+  ov.font = o["font"].value_or(ov.font);
   if (auto keys = o["keys"].as_array()) {
     ov.keys.clear();
     for (auto& e : *keys) {
@@ -226,11 +237,17 @@ void SaveConfig() {
     keys.push_back(std::move(kt));
   }
   toml::table overlay{{"enabled", ov.enabled},          {"corner", ov.corner}, {"mouse_mode", ov.mouse_mode},
-                      {"mouse_trail_ms", ov.mouse_trail_ms}, {"keys", std::move(keys)}};
+                      {"mouse_trail_ms", ov.mouse_trail_ms}, {"keys", std::move(keys)},
+                      {"key_color", ov.idle_color},          {"pressed_color", ov.pressed_color},
+                      {"text_color", ov.text_color},         {"pressed_text_color", ov.pressed_text_color},
+                      {"border_color", ov.border_color},     {"trail_color", ov.trail_color},
+                      {"click_color", ov.click_color},       {"font", ov.font}};
   num(overlay, "scale", ov.scale);
   num(overlay, "opacity", ov.opacity);
   num(overlay, "mouse_sensitivity", ov.mouse_sensitivity);
   num(overlay, "mouse_trail_length", ov.mouse_trail_length);
+  num(overlay, "trail_width", ov.trail_width);
+  num(overlay, "roundness", ov.roundness);
   t.insert("overlay", std::move(overlay));
   std::ofstream f(g.cfg_path, std::ios::trunc);
   f << "# Clip settings. Edits apply while Clip runs; fps, max_height and bitrate_mbps from the next game.\n"
@@ -240,7 +257,9 @@ void SaveConfig() {
        "# [overlay] draws your keys and mouse movement into clips, only while the game has focus.\n"
        "#   corner: top-left, top-right, bottom-left or bottom-right. scale: 1 = default size. opacity: 0 to 1.\n"
        "#   mouse_mode: \"wrap\" (the dot wraps at the pad's edges) or \"pan\" (the dot stays centred, the pad scrolls).\n"
-       "#   mouse_sensitivity, mouse_trail_length: 1 = default. mouse_trail_ms: how long the trail takes to fade.\n"
+       "#   mouse_sensitivity, mouse_trail_length, trail_width: 1 = default. mouse_trail_ms: how long the trail fades.\n"
+       "#   Colours: \"#RRGGBB\" or \"#RRGGBBAA\" (AA = opacity). roundness: corner radius in key widths, 0 to 0.5.\n"
+       "#   Easier: tray > Input overlay > Edit layout and look.\n"
        "#   keys: one entry per box. key = A-Z, 0-9, F1-F24, Space, Shift, Ctrl, Alt, Tab, Enter, Esc, Caps,\n"
        "#     Backspace, Up, Down, Left, Right, LMB, RMB, MMB, Mouse4, Mouse5, WheelUp, WheelDown,\n"
        "#     or Mouse for the movement pad. x, y, w, h: position and size in key widths. label: text shown.\n\n"
@@ -590,6 +609,8 @@ void OnCommand(UINT id) {
       else c.apps.push_back(app);
     });
   }
+  if (id >= ID_PRESET && id - ID_PRESET < OverlayPresets().size())
+    return ChangeConfig([&](Config& c) { c.overlay.keys = OverlayPresets()[id - ID_PRESET].keys; });
   if (id >= ID_LENGTH && id - ID_LENGTH < std::size(kLengths))
     return ChangeConfig([&](Config& c) { c.clip_seconds = kLengths[id - ID_LENGTH]; });
   switch (id) {
@@ -598,6 +619,13 @@ void OnCommand(UINT id) {
     case ID_GAME_AUDIO: return ChangeConfig([](Config& c) { c.record_game_audio = !c.record_game_audio; });
     case ID_MIC: return ChangeConfig([](Config& c) { c.record_mic = !c.record_mic; });
     case ID_OVERLAY: return ChangeConfig([](Config& c) { c.overlay.enabled = !c.overlay.enabled; });
+    case ID_OVERLAY_EDIT:
+      return ShowOverlayEditor(g.cfg.overlay, [](const OverlayConfig& o) {
+        ChangeConfig([&](Config& c) {
+          c.overlay = o;
+          c.overlay.enabled = true;  // you edited it to see it
+        });
+      });
     case ID_NEVER:
       if (g.session) {
         const std::string exe = g.session->exe;
@@ -668,7 +696,15 @@ void ShowMenu() {
   else if (!g.last_app_exe.empty() && IsWindow(g.last_app_wnd))
     AppendMenuW(m, MF_STRING, ID_ALWAYS, (L"Always record " + Wide(g.last_app_exe)).c_str());
   AppendMenuW(m, check(g.paused), ID_PAUSE, L"Pause recording");
-  AppendMenuW(m, check(c.overlay.enabled), ID_OVERLAY, L"Show keys and mouse in clips");
+  HMENU overlay = CreatePopupMenu();
+  AppendMenuW(overlay, check(c.overlay.enabled), ID_OVERLAY, L"Show keys and mouse in clips");
+  AppendMenuW(overlay, MF_SEPARATOR, 0, nullptr);
+  for (UINT i = 0; i < OverlayPresets().size(); i++)
+    AppendMenuW(overlay, check(c.overlay.keys == OverlayPresets()[i].keys), ID_PRESET + i,
+                Wide(OverlayPresets()[i].name).c_str());
+  AppendMenuW(overlay, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(overlay, MF_STRING, ID_OVERLAY_EDIT, L"Edit layout and look…");
+  AppendMenuW(m, MF_POPUP, UINT_PTR(overlay), L"Input overlay");
   AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")…").c_str());
   AppendMenuW(m, MF_STRING, ID_OPEN_FOLDER, L"Open clips folder");
   AppendMenuW(m, MF_STRING, ID_OPEN_CONFIG, L"Edit settings");

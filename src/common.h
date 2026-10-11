@@ -49,19 +49,52 @@ struct OverlayKey {
   bool operator==(const OverlayKey&) const = default;
 };
 
+struct OverlayPreset {
+  const char* name;
+  std::vector<OverlayKey> keys;
+};
+
+inline const std::vector<OverlayPreset>& OverlayPresets() {
+  static const std::vector<OverlayPreset> presets = {
+      {"WASD and mouse",
+       {{"Tab", "", 0, 0, 1.5f}, {"Q", "", 1.5f, 0}, {"W", "", 2.5f, 0}, {"E", "", 3.5f, 0}, {"R", "", 4.5f, 0},
+        {"Shift", "", 0, 1, 1.5f}, {"A", "", 1.5f, 1}, {"S", "", 2.5f, 1}, {"D", "", 3.5f, 1}, {"F", "", 4.5f, 1},
+        {"Ctrl", "", 0, 2, 1.5f}, {"Space", "", 1.5f, 2, 4}, {"LMB", "", 5.75f, 0}, {"RMB", "", 6.75f, 0},
+        {"Mouse", "", 5.75f, 1, 2, 2}}},
+      {"Full left hand and mouse",
+       {{"Esc", "", 0, 0},          {"1", "", 1, 0},        {"2", "", 2, 0},         {"3", "", 3, 0},
+        {"4", "", 4, 0},            {"5", "", 5, 0},        {"Tab", "", 0, 1, 1.5f}, {"Q", "", 1.5f, 1},
+        {"W", "", 2.5f, 1},         {"E", "", 3.5f, 1},     {"R", "", 4.5f, 1},      {"T", "", 5.5f, 1},
+        {"Caps", "", 0, 2, 1.75f},  {"A", "", 1.75f, 2},    {"S", "", 2.75f, 2},     {"D", "", 3.75f, 2},
+        {"F", "", 4.75f, 2},        {"G", "", 5.75f, 2},    {"Shift", "", 0, 3, 2.25f}, {"Z", "", 2.25f, 3},
+        {"X", "", 3.25f, 3},        {"C", "", 4.25f, 3},    {"V", "", 5.25f, 3},     {"Ctrl", "", 0, 4, 1.5f},
+        {"Alt", "", 1.5f, 4, 1.25f}, {"Space", "", 2.75f, 4, 3.5f}, {"LMB", "", 7, 0}, {"RMB", "", 8, 0},
+        {"Mouse", "", 7, 1, 2, 2},  {"WheelUp", "▲", 7, 3}, {"WheelDown", "▼", 8, 3}, {"Mouse4", "M4", 7, 4},
+        {"Mouse5", "M5", 8, 4}}},
+      {"Mouse only",
+       {{"LMB", "", 0, 0, 1.5f}, {"RMB", "", 1.5f, 0, 1.5f}, {"Mouse", "", 0, 1, 3, 2},
+        {"WheelUp", "▲", 0, 3, 1.5f}, {"WheelDown", "▼", 1.5f, 3, 1.5f}}},
+      {"Keyboard only",
+       {{"Tab", "", 0, 0, 1.5f}, {"Q", "", 1.5f, 0}, {"W", "", 2.5f, 0}, {"E", "", 3.5f, 0}, {"R", "", 4.5f, 0},
+        {"Shift", "", 0, 1, 1.5f}, {"A", "", 1.5f, 1}, {"S", "", 2.5f, 1}, {"D", "", 3.5f, 1}, {"F", "", 4.5f, 1},
+        {"Ctrl", "", 0, 2, 1.5f}, {"Space", "", 1.5f, 2, 4}}},
+  };
+  return presets;
+}
+
 struct OverlayConfig {
   bool enabled = false;
   std::string corner = "bottom-left";
-  float scale = 1, opacity = 0.85f;
+  float scale = 1, opacity = 1;
   std::string mouse_mode = "wrap";  // "wrap": dot wraps at the pad's edges; "pan": dot stays centred, pad scrolls
-  float mouse_sensitivity = 1, mouse_trail_length = 1;
+  float mouse_sensitivity = 1, mouse_trail_length = 1, trail_width = 1;
   int mouse_trail_ms = 600;
-  std::vector<OverlayKey> keys = {
-      {"Tab", "", 0, 0, 1.5f},    {"Q", "", 1.5f, 0},  {"W", "", 2.5f, 0},     {"E", "", 3.5f, 0},
-      {"R", "", 4.5f, 0},         {"Shift", "", 0, 1, 1.5f}, {"A", "", 1.5f, 1}, {"S", "", 2.5f, 1},
-      {"D", "", 3.5f, 1},         {"F", "", 4.5f, 1},  {"Ctrl", "", 0, 2, 1.5f}, {"Space", "", 1.5f, 2, 4},
-      {"LMB", "", 5.75f, 0},      {"RMB", "", 6.75f, 0}, {"Mouse", "", 5.75f, 1, 2, 2},
-  };
+  // Look. Colours are "#RRGGBB" or "#RRGGBBAA".
+  std::string idle_color = "#00000073", pressed_color = "#FFFFFFE6", text_color = "#FFFFFF",
+              pressed_text_color = "#000000", border_color = "#FFFFFF4D", trail_color = "#FFFFFF",
+              click_color = "#FFCC40", font = "Segoe UI";
+  float roundness = 0.15f;  // corner radius, in key widths
+  std::vector<OverlayKey> keys = OverlayPresets()[0].keys;
   bool operator==(const OverlayConfig&) const = default;
 };
 
