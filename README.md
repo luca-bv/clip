@@ -8,7 +8,7 @@ Records your game in the background and saves the last 30 seconds when you press
 2. Launch a game. Clip starts recording when a fullscreen or borderless window has focus, and stops when the game exits.
 3. Press **Alt+F9**. A chime means the clip was saved to `Videos\Clip\<game>\`.
 
-The tray menu sets clip length, picks which audio is recorded (game, microphone, and any app that's playing sound, like Spotify or Discord), and has *Always record* / *Never record* for apps the fullscreen check gets wrong.
+The tray menu changes the shortcut (press the keys you want), sets clip length, picks which audio is recorded (game, microphone, and any app that's playing sound, like Spotify or Discord), and has *Always record* / *Never record* for apps the fullscreen check gets wrong.
 
 Every clip has the video, a **Mix** track with all enabled audio, and one track per audio source, for editors that can split them.
 

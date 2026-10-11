@@ -20,6 +20,7 @@ namespace {
 enum : UINT { WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED };
 enum : UINT {
   ID_SAVE = 1, ID_PAUSE, ID_OPEN_FOLDER, ID_OPEN_CONFIG, ID_QUIT, ID_NEVER, ID_ALWAYS, ID_GAME_AUDIO, ID_MIC,
+  ID_SHORTCUT,
   ID_LENGTH = 100,  // + index into kLengths
   ID_APP = 200,     // + index into g.menu_apps
 };
@@ -53,6 +54,8 @@ struct {
   std::set<std::string> warned;  // exes we already showed a capture error for
   std::vector<std::string> menu_apps;
   ULONGLONG last_save = 0;
+  HWND picker = nullptr;  // "Change shortcut" window while open
+  std::wstring picker_text;
 } g;
 
 std::mutex g_log_m;
@@ -193,6 +196,19 @@ void SaveConfig() {
     << t << "\n";
 }
 
+const std::pair<const char*, UINT> kNamedKeys[] = {{"Insert", VK_INSERT}, {"Home", VK_HOME},       {"End", VK_END},
+                                                   {"PageUp", VK_PRIOR},  {"PageDown", VK_NEXT}, {"Pause", VK_PAUSE},
+                                                   {"ScrollLock", VK_SCROLL}};
+
+// Name of a key a shortcut can use ("F9", "S", "PageUp"), or "" if it can't be one.
+std::string KeyName(UINT vk) {
+  if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::string(1, char(vk));
+  if (vk >= VK_F1 && vk <= VK_F24) return "F" + std::to_string(vk - VK_F1 + 1);
+  for (auto& [name, v] : kNamedKeys)
+    if (v == vk) return name;
+  return {};
+}
+
 bool ParseHotkey(const std::string& s, UINT& mods, UINT& vk) {
   mods = MOD_NOREPEAT;
   vk = 0;
@@ -203,18 +219,12 @@ bool ParseHotkey(const std::string& s, UINT& mods, UINT& vk) {
     else if (k == "alt") mods |= MOD_ALT;
     else if (k == "shift") mods |= MOD_SHIFT;
     else if (k == "win") mods |= MOD_WIN;
-    else if (k.size() == 1 && std::isalnum(uint8_t(k[0]))) vk = UINT(std::toupper(uint8_t(k[0])));
-    else if (k.size() > 1 && k[0] == 'f' && std::all_of(k.begin() + 1, k.end(), ::isdigit) && std::stoi(k.substr(1)) >= 1 &&
-             std::stoi(k.substr(1)) <= 24)
-      vk = VK_F1 + std::stoi(k.substr(1)) - 1;
-    else if (k == "insert") vk = VK_INSERT;
-    else if (k == "home") vk = VK_HOME;
-    else if (k == "end") vk = VK_END;
-    else if (k == "pageup") vk = VK_PRIOR;
-    else if (k == "pagedown") vk = VK_NEXT;
-    else if (k == "pause") vk = VK_PAUSE;
-    else if (k == "scrolllock") vk = VK_SCROLL;
-    else return false;
+    else {
+      vk = 0;
+      for (UINT v = 1; v < 256 && !vk; v++)
+        if (auto name = KeyName(v); !name.empty() && Lower(name) == k) vk = v;
+      if (!vk) return false;
+    }
   }
   return vk != 0;
 }
@@ -237,7 +247,7 @@ void SetRunAtLogin(bool on) {
 void StopSession();
 
 void ApplyConfig() {
-  if (g.cfg.hotkey != g.hotkey) {
+  if (g.cfg.hotkey != g.hotkey && !g.picker) {
     UnregisterHotKey(g.wnd, kHotkey);
     g.hotkey = g.cfg.hotkey;
     UINT mods, vk;
@@ -273,6 +283,104 @@ void ChangeConfig(auto&& edit) {
   edit(g.cfg);
   SaveConfig();
   ApplyConfig();
+}
+
+// ---- shortcut picker ----
+
+constexpr int kProbeHotkey = 2;
+const wchar_t kPickerPrompt[] = L"Press the shortcut for saving a clip.\nEsc to cancel.";
+
+void PickerSay(const std::wstring& text) {
+  g.picker_text = text + L"\n\nTry another, or press Esc to cancel.";
+  InvalidateRect(g.picker, nullptr, TRUE);
+}
+
+void OnPickerKey(UINT vk) {
+  const bool ctrl = GetKeyState(VK_CONTROL) < 0, alt = GetKeyState(VK_MENU) < 0, shift = GetKeyState(VK_SHIFT) < 0,
+             win = GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0;
+  if (vk == VK_ESCAPE || (alt && vk == VK_F4)) return (void)DestroyWindow(g.picker);
+  const std::string key = KeyName(vk);
+  if (key.empty()) {
+    if (vk != VK_CONTROL && vk != VK_MENU && vk != VK_SHIFT && vk != VK_LWIN && vk != VK_RWIN)
+      PickerSay(L"That key can't be a shortcut. Use an F-key, or a letter or number with Ctrl or Alt.");
+    return;  // a modifier on its own: wait for the rest
+  }
+  if (key.size() == 1 && !ctrl && !alt && !win) return PickerSay(L"Add Ctrl or Alt to a letter or number, so typing it doesn't save a clip.");
+  const std::string combo = std::string(ctrl ? "Ctrl+" : "") + (alt ? "Alt+" : "") + (shift ? "Shift+" : "") +
+                            (win ? "Win+" : "") + key;
+  UINT mods, v;
+  ParseHotkey(combo, mods, v);
+  if (!RegisterHotKey(g.wnd, kProbeHotkey, mods, v)) return PickerSay(Wide(combo) + L" is used by another app.");
+  UnregisterHotKey(g.wnd, kProbeHotkey);
+  HWND picker = g.picker;
+  g.picker = nullptr;  // so ApplyConfig registers the new one
+  ChangeConfig([&](Config& c) { c.hotkey = combo; });
+  DestroyWindow(picker);
+  PlaySoundW(L"SystemAsterisk", nullptr, SND_ALIAS | SND_ASYNC);
+}
+
+LRESULT CALLBACK PickerProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
+  switch (msg) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: OnPickerKey(UINT(wp)); return 0;
+    case WM_CHAR:
+    case WM_SYSCHAR: return 0;  // no beeps
+    case WM_SYSCOMMAND:
+      if ((wp & 0xFFF0) == SC_KEYMENU) return 0;  // Alt alone shouldn't open the window menu
+      break;
+    case WM_PAINT: {
+      const UINT dpi = GetDpiForWindow(w);
+      static HFONT font = [&] {
+        NONCLIENTMETRICSW m{sizeof m};
+        SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof m, &m, 0, dpi);
+        return CreateFontIndirectW(&m.lfMessageFont);
+      }();
+      PAINTSTRUCT ps;
+      HDC dc = BeginPaint(w, &ps);
+      RECT r;
+      GetClientRect(w, &r);
+      InflateRect(&r, -MulDiv(16, dpi, 96), -MulDiv(14, dpi, 96));
+      SelectObject(dc, font);
+      SetBkMode(dc, TRANSPARENT);
+      DrawTextW(dc, g.picker_text.c_str(), -1, &r, DT_WORDBREAK);
+      EndPaint(w, &ps);
+      return 0;
+    }
+    case WM_DESTROY:
+      if (g.picker == w) {  // cancelled: put the old shortcut back
+        g.picker = nullptr;
+        g.hotkey.clear();
+        ApplyConfig();
+      }
+      return 0;
+  }
+  return DefWindowProcW(w, msg, wp, lp);
+}
+
+void ShowShortcutPicker() {
+  if (g.picker) return (void)SetForegroundWindow(g.picker);
+  static const bool registered = [] {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = PickerProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"ClipShortcut";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = HBRUSH(COLOR_WINDOW + 1);
+    return RegisterClassW(&wc) != 0;
+  }();
+  (void)registered;
+  UnregisterHotKey(g.wnd, kHotkey);  // so pressing the current shortcut reaches the window
+  g.hotkey.clear();
+  g.picker_text = std::wstring(kPickerPrompt) + L"\n\nNow: " + Wide(g.cfg.hotkey);
+  const UINT dpi = GetDpiForSystem();
+  const int w = MulDiv(380, dpi, 96), h = MulDiv(170, dpi, 96);
+  RECT wa;
+  SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+  g.picker = CreateWindowExW(WS_EX_TOPMOST, L"ClipShortcut", L"Clip shortcut", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                             (wa.left + wa.right - w) / 2, (wa.top + wa.bottom - h) / 2, w, h, nullptr, nullptr,
+                             GetModuleHandleW(nullptr), nullptr);
+  ShowWindow(g.picker, SW_SHOW);
+  SetForegroundWindow(g.picker);
 }
 
 // ---- recording ----
@@ -433,6 +541,7 @@ void OnCommand(UINT id) {
     return ChangeConfig([&](Config& c) { c.clip_seconds = kLengths[id - ID_LENGTH]; });
   switch (id) {
     case ID_SAVE: return SaveClip();
+    case ID_SHORTCUT: return ShowShortcutPicker();
     case ID_GAME_AUDIO: return ChangeConfig([](Config& c) { c.record_game_audio = !c.record_game_audio; });
     case ID_MIC: return ChangeConfig([](Config& c) { c.record_mic = !c.record_mic; });
     case ID_NEVER:
@@ -505,6 +614,7 @@ void ShowMenu() {
   else if (!g.last_app_exe.empty() && IsWindow(g.last_app_wnd))
     AppendMenuW(m, MF_STRING, ID_ALWAYS, (L"Always record " + Wide(g.last_app_exe)).c_str());
   AppendMenuW(m, check(g.paused), ID_PAUSE, L"Pause recording");
+  AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")…").c_str());
   AppendMenuW(m, MF_STRING, ID_OPEN_FOLDER, L"Open clips folder");
   AppendMenuW(m, MF_STRING, ID_OPEN_CONFIG, L"Edit settings");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
