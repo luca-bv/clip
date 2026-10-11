@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -80,13 +81,40 @@ std::string ExeName(DWORD pid) {
 
 // ---- tray ----
 
+// A filled dot in the tray's icon size, drawn at runtime so there's no icon file to ship.
+HICON DotIcon(uint8_t r, uint8_t gr, uint8_t b) {
+  const int n = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem());
+  BITMAPINFO bi{};
+  bi.bmiHeader = {DWORD(sizeof(BITMAPINFOHEADER)), n, -n, 1, 32, BI_RGB};
+  void* bits = nullptr;
+  HBITMAP color = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  auto* px = static_cast<uint32_t*>(bits);
+  const float c = (n - 1) / 2.f, radius = n * 0.36f;
+  for (int y = 0; y < n; y++)
+    for (int x = 0; x < n; x++) {
+      const float a = std::clamp(radius + 0.5f - std::hypot(x - c, y - c), 0.f, 1.f);  // antialiased edge
+      px[y * n + x] = uint32_t(a * 255) << 24 | uint32_t(r * a) << 16 | uint32_t(gr * a) << 8 | uint32_t(b * a);
+    }
+  HBITMAP mask = CreateBitmap(n, n, 1, 1, nullptr);
+  ICONINFO ii{TRUE, 0, 0, mask, color};
+  HICON icon = CreateIconIndirect(&ii);
+  DeleteObject(mask);
+  DeleteObject(color);
+  return icon;
+}
+
+HICON TrayIcon(bool recording) {
+  static HICON red = DotIcon(232, 48, 48), grey = DotIcon(150, 150, 150);
+  return recording ? red : grey;
+}
+
 void AddTrayIcon() {
   g.nid.cbSize = sizeof g.nid;
   g.nid.hWnd = g.wnd;
   g.nid.uID = 1;
   g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g.nid.uCallbackMessage = WM_TRAY;
-  g.nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  g.nid.hIcon = TrayIcon(false);
   wcscpy_s(g.nid.szTip, L"Clip");
   Shell_NotifyIconW(NIM_ADD, &g.nid);
 }
@@ -96,7 +124,8 @@ void UpdateTip() {
                      : g.session ? L"Clip: recording " + Wide(g.session->exe)
                                  : L"Clip: waiting for a game";
   wcsncpy_s(g.nid.szTip, tip.c_str(), _TRUNCATE);
-  g.nid.uFlags = NIF_TIP;
+  g.nid.hIcon = TrayIcon(g.session != nullptr);
+  g.nid.uFlags = NIF_TIP | NIF_ICON;
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
@@ -284,7 +313,10 @@ void StartSession(HWND w, DWORD pid, const std::string& exe) {
   UpdateTip();
 }
 
+// Fullscreen or borderless: covers its monitor and has no title bar (a maximized window
+// covers the monitor too when the taskbar auto-hides).
 bool FillsMonitor(HWND w) {
+  if ((GetWindowLongW(w, GWL_STYLE) & WS_CAPTION) == WS_CAPTION) return false;
   RECT r;
   MONITORINFO mi{sizeof mi};
   if (!GetWindowRect(w, &r) || !GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mi)) return false;

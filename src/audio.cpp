@@ -11,6 +11,7 @@
 namespace {
 constexpr int64_t kLatency = kRate * 3 / 20;  // mix 150 ms behind real time so every source has delivered
 const WAVEFORMATEX kFormat{WAVE_FORMAT_IEEE_FLOAT, 2, kRate, kRate * 8, 8, 32, 0};
+const WAVEFORMATEX kPcm16{WAVE_FORMAT_PCM, 2, kRate, kRate * 4, 4, 16, 0};
 
 struct ActivateHandler : winrt::implements<ActivateHandler, IActivateAudioInterfaceCompletionHandler> {
   winrt::handle done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
@@ -27,8 +28,7 @@ struct ActivateHandler : winrt::implements<ActivateHandler, IActivateAudioInterf
   }
 };
 
-// Audio of one process tree, through the audio engine's per-process loopback.
-com_ptr<IAudioClient> ProcessLoopback(DWORD pid) {
+com_ptr<IAudioClient> ActivateLoopback(DWORD pid) {
   AUDIOCLIENT_ACTIVATION_PARAMS params{};
   params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
   params.ProcessLoopbackParams.TargetProcessId = pid;
@@ -43,16 +43,39 @@ com_ptr<IAudioClient> ProcessLoopback(DWORD pid) {
                                                    handler.get(), op.put()));
   if (WaitForSingleObject(handler->done.get(), 5000) != WAIT_OBJECT_0) throw std::runtime_error("activation timed out");
   winrt::check_hresult(handler->hr);
-  winrt::check_hresult(handler->client->Initialize(
-      AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 2'000'000, 0,
-      &kFormat, nullptr));
   return handler->client;
 }
 
-com_ptr<IAudioClient> OpenMicrophone() {
+// Audio of one process tree, through the audio engine's per-process loopback. Float if it takes it,
+// else 16-bit PCM (the format Microsoft's sample uses), converted in the capture loop.
+com_ptr<IAudioClient> ProcessLoopback(DWORD pid, bool& pcm16) {
+  constexpr DWORD flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+  auto client = ActivateLoopback(pid);
+  pcm16 = FAILED(client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 2'000'000, 0, &kFormat, nullptr));
+  if (pcm16) {
+    client = ActivateLoopback(pid);
+    winrt::check_hresult(client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 2'000'000, 0, &kPcm16, nullptr));
+  }
+  return client;
+}
+
+std::wstring DefaultMicId() {
+  auto devices = winrt::create_instance<IMMDeviceEnumerator>(__uuidof(MMDeviceEnumerator));
+  com_ptr<IMMDevice> dev;
+  wchar_t* id = nullptr;
+  std::wstring r;
+  if (SUCCEEDED(devices->GetDefaultAudioEndpoint(eCapture, eConsole, dev.put())) && SUCCEEDED(dev->GetId(&id))) r = id;
+  CoTaskMemFree(id);
+  return r;
+}
+
+com_ptr<IAudioClient> OpenMicrophone(std::wstring& id) {
   auto devices = winrt::create_instance<IMMDeviceEnumerator>(__uuidof(MMDeviceEnumerator));
   com_ptr<IMMDevice> dev;
   winrt::check_hresult(devices->GetDefaultAudioEndpoint(eCapture, eConsole, dev.put()));
+  wchar_t* s = nullptr;
+  if (SUCCEEDED(dev->GetId(&s))) id = s;
+  CoTaskMemFree(s);
   com_ptr<IAudioClient> client;
   winrt::check_hresult(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, client.put_void()));
   winrt::check_hresult(client->Initialize(AUDCLNT_SHAREMODE_SHARED,
@@ -96,7 +119,7 @@ void EncodeFrame(PacketRing& ring, int track, AVCodecContext* e, const float* st
 struct AudioMixer::Source {
   Source(std::string name_, DWORD pid_, int64_t t0)
       : name(std::move(name_)), pid(pid_), t0_hns(QpcTo(t0, 10'000'000)) {
-    client = pid ? ProcessLoopback(pid) : OpenMicrophone();
+    client = pid ? ProcessLoopback(pid, pcm16) : OpenMicrophone(device);
     winrt::check_hresult(client->GetService(__uuidof(IAudioCaptureClient), capture.put_void()));
     winrt::check_hresult(client->SetEventHandle(event.get()));
     enc = OpenAac();
@@ -125,7 +148,16 @@ struct AudioMixer::Source {
         if (FAILED(hr = capture->GetBuffer(&data, &frames, &flags, nullptr, &qpc))) break;
         if (!qpc) qpc = QpcTo(QpcNow(), 10'000'000) - frames * 10'000'000ull / kRate;
         const int64_t at = (int64_t(qpc) - t0_hns) * kRate / 10'000'000;
-        fifo.Write(at, (flags & AUDCLNT_BUFFERFLAGS_SILENT) ? nullptr : reinterpret_cast<const float*>(data), frames);
+        const float* samples = reinterpret_cast<const float*>(data);
+        if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+          samples = nullptr;
+        } else if (pcm16) {
+          convert.resize(frames * 2);
+          auto* in = reinterpret_cast<const int16_t*>(data);
+          for (size_t i = 0; i < convert.size(); i++) convert[i] = in[i] / 32768.f;
+          samples = convert.data();
+        }
+        fifo.Write(at, samples, frames);
         capture->ReleaseBuffer(frames);
       }
       if (FAILED(hr)) {  // device unplugged or process gone; Sync replaces dead sources
@@ -143,11 +175,14 @@ struct AudioMixer::Source {
   AVCodecContext* enc = nullptr;
   std::atomic<bool> stop{false}, dead{false};
   SampleFifo fifo;
+  std::wstring device;  // microphone endpoint, to notice when the default changes
 
  private:
   com_ptr<IAudioClient> client;
   com_ptr<IAudioCaptureClient> capture;
   winrt::handle event{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
+  bool pcm16 = false;
+  std::vector<float> convert;
   std::thread thread;
 };
 
@@ -165,8 +200,10 @@ AudioMixer::~AudioMixer() {
 }
 
 void AudioMixer::Sync(const std::vector<std::pair<std::string, DWORD>>& want) {
+  const bool mic = std::ranges::any_of(want, [](auto& w) { return w.second == 0; });
+  const std::wstring mic_id = mic ? DefaultMicId() : L"";
   auto wanted = [&](const Source& s) {
-    return !s.dead && std::ranges::find(want, std::pair{s.name, s.pid}) != want.end();
+    return !s.dead && (s.pid || s.device == mic_id) && std::ranges::find(want, std::pair{s.name, s.pid}) != want.end();
   };
   std::vector<std::unique_ptr<Source>> drop;
   {
