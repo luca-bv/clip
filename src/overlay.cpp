@@ -261,8 +261,17 @@ void InputOverlay::Loop(std::promise<void>* started) {
     if (msg.message == WM_INPUT) OnInput(HRAWINPUT(msg.lParam));
     DispatchMessageW(&msg);
   }
-  for (auto& d : devs) d.dwFlags = RIDEV_REMOVE, d.hwndTarget = nullptr;
-  RegisterRawInputDevices(devs, 2, sizeof devs[0]);
+  // Raw Input registrations are per process: a newer overlay may own them now, so only remove ours.
+  RAWINPUTDEVICE cur[8];
+  UINT n = UINT(std::size(cur));
+  n = GetRegisteredRawInputDevices(cur, &n, sizeof cur[0]);
+  for (UINT i = 0; n != UINT(-1) && i < n; i++)
+    if (cur[i].hwndTarget == w) {
+      RAWINPUTDEVICE d = cur[i];
+      d.dwFlags = RIDEV_REMOVE;
+      d.hwndTarget = nullptr;
+      RegisterRawInputDevices(&d, 1, sizeof d);
+    }
   if (w) DestroyWindow(w);
 }
 

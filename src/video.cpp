@@ -238,6 +238,8 @@ void VideoCapture::Loop() {
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
   HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
   const int64_t f = QpcFreq();
+  // Stats for the log: ticks encoded, ticks skipped because we fell behind, time spent encoding.
+  int64_t encoded = 0, skipped = 0, busy = 0, since = QpcNow();
   for (int64_t n = 0; !stop_;) {
     const int64_t due = t0_ + n * f / fps_;
     const int64_t wait = due - QpcNow();
@@ -247,14 +249,26 @@ void VideoCapture::Loop() {
       SetWaitableTimerEx(timer, &li, 0, nullptr, nullptr, nullptr, 0);
       WaitForSingleObject(timer, INFINITE);
     } else if (-wait > 2 * f / fps_) {
-      n = (QpcNow() - t0_) * fps_ / f + 1;
+      const int64_t next = (QpcNow() - t0_) * fps_ / f + 1;
+      skipped += next - n;
+      n = next;
       continue;
     }
+    const int64_t start = QpcNow();
     if (!Encode(n)) {
       failed_ = true;
       break;
     }
+    busy += QpcNow() - start;
+    encoded++;
     n++;
+    if (const int64_t now = QpcNow(); now - since >= 30 * f) {
+      Log("video: {:.1f} fps encoded, {:.0f}% repeated frames, {} skipped, {:.2f} ms per frame",
+          encoded * double(f) / double(now - since), encoded ? 100.0 * repeats_ / double(encoded) : 0.0, skipped,
+          encoded ? QpcTo(busy, 1'000'000) / 1000.0 / double(encoded) : 0.0);
+      encoded = skipped = busy = repeats_ = 0;
+      since = now;
+    }
   }
   CloseHandle(timer);
 }
@@ -268,6 +282,9 @@ bool VideoCapture::Encode(int64_t pts) {
     overlay = overlay_;
   }
   if (!frame) return true;  // nothing captured yet
+  const int64_t frame_time = frame.SystemRelativeTime().count();
+  if (frame_time == last_frame_time_) repeats_++;  // the game hasn't presented since last tick
+  last_frame_time_ = frame_time;
 
   AVFrame* out = av_frame_alloc();
   try {

@@ -122,6 +122,7 @@ class VideoCapture {
   AVBufferRef* hw_frames_ = nullptr;
   AVCodecContext* enc_ = nullptr;
 
+  int64_t last_frame_time_ = -1, repeats_ = 0;  // video thread only
   std::atomic<bool> stop_{false}, failed_{false};
   std::thread thread_;
 };

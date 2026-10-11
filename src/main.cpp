@@ -133,10 +133,10 @@ void UpdateTip() {
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
-void Balloon(const std::wstring& title, const std::wstring& text) {
+void Balloon(const std::wstring& title, const std::wstring& text, bool warning = true) {
   Log("{}: {}", Utf8(title), Utf8(text));
   g.nid.uFlags = NIF_INFO;
-  g.nid.dwInfoFlags = NIIF_WARNING;
+  g.nid.dwInfoFlags = warning ? NIIF_WARNING : NIIF_INFO;
   wcsncpy_s(g.nid.szInfoTitle, title.c_str(), _TRUNCATE);
   wcsncpy_s(g.nid.szInfo, text.c_str(), _TRUNCATE);
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
@@ -338,7 +338,11 @@ void LoadConfig() {
   std::ifstream f(g.cfg_path);
   if (!f) {  // first run: write the defaults so there's something to edit
     SaveConfig();
-    return ApplyConfig();
+    ApplyConfig();
+    return Balloon(L"Clip is running", L"It records games in the background. Press " + Wide(g.cfg.hotkey) +
+                                           L" in a game to save the last " + std::to_wstring(g.cfg.clip_seconds) +
+                                           L" seconds. Settings are in this tray icon.",
+                   false);
   }
   std::stringstream ss;
   ss << f.rdbuf();
