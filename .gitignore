@@ -1,0 +1,7 @@
+build/
+ffmpeg/
+ffmpeg.zip
+dist/
+.vs/
+spec.md
+images/

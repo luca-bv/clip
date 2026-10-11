@@ -1,0 +1,32 @@
+name: build
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get FFmpeg (LGPL, shared)
+        shell: pwsh
+        run: |
+          $name = "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1"
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath .
+          Rename-Item $name ffmpeg
+          Get-ChildItem ffmpeg/lib, ffmpeg/bin | Select-Object -ExpandProperty Name
+
+      - run: cmake -B build -A x64 -DFFMPEG_DIR="${{ github.workspace }}/ffmpeg"
+      - run: cmake --build build --config Release
+      - run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build/Release/Clip.exe, build/Release/*.dll, LICENSE, README.md dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Clip
+          path: dist
