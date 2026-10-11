@@ -4,6 +4,8 @@ on: [push, pull_request, workflow_dispatch]
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: write  # publish the latest-build release
     steps:
       - uses: actions/checkout@v7
 
@@ -30,3 +32,15 @@ jobs:
         with:
           name: Clip
           path: dist
+
+      # install.sh downloads releases/latest/download/Clip.zip, which needs no GitHub login.
+      - name: Publish as the latest build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive dist/* Clip.zip
+          gh release delete latest-build --yes --cleanup-tag 2>$null
+          gh release create latest-build Clip.zip --target ${{ github.sha }} --latest `
+            --title "Latest build" --notes "Built from ${{ github.sha }}. Install or update: see README."

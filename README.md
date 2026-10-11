@@ -4,7 +4,11 @@ Records your game in the background and saves the last 30 seconds when you press
 
 ## Use
 
-1. Download the `Clip` artifact from the latest [build](../../actions), unzip it anywhere, and run `Clip.exe`. It lives in the tray and starts with Windows.
+1. In Git Bash on Windows 11, run:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/luca-bv/clip/main/install.sh | bash
+   ```
+   Run it again to update. Add `-s -- --uninstall` after `bash` to remove Clip (your clips and settings stay). Or download `Clip.zip` from [the latest release](../../releases/latest), unzip it anywhere and run `Clip.exe`. Clip lives in the tray and starts with Windows.
 2. Launch a game. Clip starts recording when a fullscreen or borderless window has focus, and stops when the game exits.
 3. Press **Alt+F9**. A chime means the clip was saved to `Videos\Clip\<game>\`.
 
