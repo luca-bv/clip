@@ -261,9 +261,11 @@ void VideoCapture::Loop() {
 
 bool VideoCapture::Encode(int64_t pts) {
   Direct3D11CaptureFrame frame{nullptr};
+  std::shared_ptr<InputOverlay> overlay;
   {
     std::lock_guard l(frame_m_);
     frame = latest_;  // our reference keeps the texture out of WGC's hands until we're done
+    overlay = overlay_;
   }
   if (!frame) return true;  // nothing captured yet
 
@@ -282,9 +284,20 @@ bool VideoCapture::Encode(int64_t pts) {
     const RECT src{0, 0, LONG(cw), LONG(ch)}, dst = Fit(cw, ch, w_, h_);
     vctx_->VideoProcessorSetStreamSourceRect(vp_.get(), 0, TRUE, &src);
     vctx_->VideoProcessorSetStreamDestRect(vp_.get(), 0, TRUE, &dst);
+    // Draw the overlay on a copy (WGC's own texture is shared with the capture), or copy if the
+    // processor can't read WGC textures at all.
+    auto* in = overlay || use_copy_ ? nullptr : InputView(tex.get());
+    if (!in) {
+      if (!overlay && !use_copy_) Log("capture textures aren't readable by the video processor; copying each frame");
+      use_copy_ = use_copy_ || !overlay;
+      CopyFrame(tex.get());
+      if (overlay) DrawOverlay(*overlay);
+      in = InputView(copy_.get());
+      if (!in) throw std::runtime_error("video processor can't read frames");
+    }
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable = TRUE;
-    stream.pInputSurface = InputView(tex);
+    stream.pInputSurface = in;
     winrt::check_hresult(vctx_->VideoProcessorBlt(vp_.get(), out_view, 0, 1, &stream));
 
     out->pts = pts;
@@ -306,6 +319,7 @@ void VideoCapture::CreateProcessor(UINT in_w, UINT in_h) {
   in_views_.clear();
   out_views_.clear();
   copy_ = nullptr;
+  d2d_target_ = nullptr;
   vp_ = nullptr;
   venum_ = nullptr;
   D3D11_VIDEO_PROCESSOR_CONTENT_DESC cd{};
@@ -331,22 +345,21 @@ void VideoCapture::CreateProcessor(UINT in_w, UINT in_h) {
   Log("video processor {}x{} -> {}x{}", in_w, in_h, w_, h_);
 }
 
-ID3D11VideoProcessorInputView* VideoCapture::InputView(const com_ptr<ID3D11Texture2D>& tex) {
+ID3D11VideoProcessorInputView* VideoCapture::InputView(ID3D11Texture2D* tex) {
+  for (auto& [t, v] : in_views_)
+    if (t.get() == tex) return v.get();
   D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC vd{};
   vd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-  if (!use_copy_) {
-    for (auto& [t, v] : in_views_)
-      if (t == tex) return v.get();
-    com_ptr<ID3D11VideoProcessorInputView> v;
-    if (SUCCEEDED(vdev_->CreateVideoProcessorInputView(tex.get(), venum_.get(), &vd, v.put()))) {
-      if (in_views_.size() >= 2 * kPoolFrames) in_views_.clear();  // pool was recreated
-      in_views_.emplace_back(tex, v);
-      return v.get();
-    }
-    Log("capture textures aren't readable by the video processor; copying each frame");
-    use_copy_ = true;
-    in_views_.clear();
-  }
+  com_ptr<ID3D11VideoProcessorInputView> v;
+  if (FAILED(vdev_->CreateVideoProcessorInputView(tex, venum_.get(), &vd, v.put()))) return nullptr;
+  if (in_views_.size() > 2 * kPoolFrames) in_views_.clear();  // pool was recreated
+  com_ptr<ID3D11Texture2D> t;
+  t.copy_from(tex);
+  in_views_.emplace_back(t, v);
+  return v.get();
+}
+
+void VideoCapture::CopyFrame(ID3D11Texture2D* tex) {
   if (!copy_) {
     D3D11_TEXTURE2D_DESC d;
     tex->GetDesc(&d);
@@ -355,12 +368,41 @@ ID3D11VideoProcessorInputView* VideoCapture::InputView(const com_ptr<ID3D11Textu
     d.Usage = D3D11_USAGE_DEFAULT;
     d.CPUAccessFlags = 0;
     winrt::check_hresult(dev_->CreateTexture2D(&d, nullptr, copy_.put()));
-    com_ptr<ID3D11VideoProcessorInputView> v;
-    winrt::check_hresult(vdev_->CreateVideoProcessorInputView(copy_.get(), venum_.get(), &vd, v.put()));
-    in_views_ = {{copy_, v}};
+    d2d_target_ = nullptr;
   }
-  ctx_->CopyResource(copy_.get(), tex.get());
-  return in_views_[0].second.get();
+  ctx_->CopyResource(copy_.get(), tex);
+}
+
+void VideoCapture::DrawOverlay(InputOverlay& overlay) {
+  if (!d2d_) {
+    com_ptr<ID2D1Factory1> factory;
+    D2D1_FACTORY_OPTIONS fo{};
+    winrt::check_hresult(
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory1), &fo, factory.put_void()));
+    com_ptr<ID2D1Device> d2d_dev;
+    winrt::check_hresult(factory->CreateDevice(dev_.as<IDXGIDevice>().get(), d2d_dev.put()));
+    winrt::check_hresult(d2d_dev->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, d2d_.put()));
+  }
+  if (!d2d_target_) {
+    const auto props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                                               D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+    winrt::check_hresult(d2d_->CreateBitmapFromDxgiSurface(copy_.as<IDXGISurface>().get(), &props, d2d_target_.put()));
+  }
+  d2d_->SetTarget(d2d_target_.get());
+  d2d_->BeginDraw();
+  overlay.Draw(d2d_.get(), d2d_target_->GetSize());
+  const HRESULT hr = d2d_->EndDraw();
+  d2d_->SetTarget(nullptr);
+  if (FAILED(hr)) {  // device trouble: rebuild next frame rather than stop recording
+    Log("overlay draw failed (0x{:08x})", uint32_t(hr));
+    d2d_target_ = nullptr;
+    d2d_ = nullptr;
+  }
+}
+
+void VideoCapture::SetOverlay(std::shared_ptr<InputOverlay> overlay) {
+  std::lock_guard l(frame_m_);
+  overlay_ = std::move(overlay);
 }
 
 ID3D11VideoProcessorOutputView* VideoCapture::OutputView(ID3D11Texture2D* tex, UINT slice) {

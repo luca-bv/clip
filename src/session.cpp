@@ -190,6 +190,7 @@ Session::Session(HWND hwnd_, DWORD pid_, std::string exe_, const Config& cfg, st
   video_ = std::make_unique<VideoCapture>(hwnd, cfg, *ring_, t0_, std::move(on_window_closed));  // track 0
   audio_ = std::make_unique<AudioMixer>(*ring_, t0_);                                           // track 1 = mix
   SyncAudio(cfg);
+  SetOverlay(cfg.overlay);
   Log("recording {}", exe);
 }
 
@@ -210,6 +211,16 @@ void Session::SyncAudio(const Config& cfg) {
       if (auto it = roots.find(a); a != exe && it != roots.end()) want.emplace_back(Stem(a), it->second);
   }
   audio_->Sync(want);
+}
+
+void Session::SetOverlay(const OverlayConfig& cfg) {
+  if (!cfg.enabled) {
+    if (overlay_) video_->SetOverlay(nullptr);
+    overlay_ = nullptr;
+  } else if (!overlay_ || overlay_->config() != cfg) {
+    overlay_ = std::make_shared<InputOverlay>(cfg, pid);
+    video_->SetOverlay(overlay_);
+  }
 }
 
 void Session::Save(int seconds, fs::path file, std::function<void(std::string)> done) {

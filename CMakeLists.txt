@@ -11,14 +11,14 @@ FetchContent_MakeAvailable(tomlplusplus)
 # An LGPL shared FFmpeg build with include/, lib/ and bin/ (CI downloads one from BtbN/FFmpeg-Builds).
 set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/ffmpeg" CACHE PATH "FFmpeg shared build")
 
-add_executable(Clip WIN32 src/main.cpp src/session.cpp src/video.cpp src/audio.cpp)
+add_executable(Clip WIN32 src/main.cpp src/session.cpp src/video.cpp src/audio.cpp src/overlay.cpp)
 target_compile_definitions(Clip PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(Clip PRIVATE /utf-8 /W3 /permissive-)
 target_include_directories(Clip PRIVATE "${FFMPEG_DIR}/include")
 target_link_libraries(Clip PRIVATE
   tomlplusplus::tomlplusplus
   "${FFMPEG_DIR}/lib/avcodec.lib" "${FFMPEG_DIR}/lib/avformat.lib" "${FFMPEG_DIR}/lib/avutil.lib"
-  d3d11 dxgi windowsapp mmdevapi winmm shell32 ole32 user32 advapi32)
+  d3d11 dxgi d2d1 dwrite windowsapp mmdevapi winmm shell32 ole32 user32 advapi32)
 
 file(GLOB FFMPEG_DLLS "${FFMPEG_DIR}/bin/*.dll")
 add_custom_command(TARGET Clip POST_BUILD
@@ -27,3 +27,5 @@ add_custom_command(TARGET Clip POST_BUILD
 enable_testing()
 add_executable(fifo_test tests/fifo_test.cpp)
 add_test(NAME fifo COMMAND fifo_test)
+add_executable(trail_test tests/trail_test.cpp)
+add_test(NAME trail COMMAND trail_test)

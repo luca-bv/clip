@@ -43,6 +43,28 @@ inline int64_t QpcTo(int64_t ticks, int64_t rate) {
   return ticks / f * rate + ticks % f * rate / f;
 }
 
+struct OverlayKey {
+  std::string key, label;            // label "" = key name; key "Mouse" = mouse movement pad
+  float x = 0, y = 0, w = 1, h = 1;  // in key widths from the overlay's top-left
+  bool operator==(const OverlayKey&) const = default;
+};
+
+struct OverlayConfig {
+  bool enabled = false;
+  std::string corner = "bottom-left";
+  float scale = 1, opacity = 0.85f;
+  std::string mouse_mode = "wrap";  // "wrap": dot wraps at the pad's edges; "pan": dot stays centred, pad scrolls
+  float mouse_sensitivity = 1, mouse_trail_length = 1;
+  int mouse_trail_ms = 600;
+  std::vector<OverlayKey> keys = {
+      {"Tab", "", 0, 0, 1.5f},    {"Q", "", 1.5f, 0},  {"W", "", 2.5f, 0},     {"E", "", 3.5f, 0},
+      {"R", "", 4.5f, 0},         {"Shift", "", 0, 1, 1.5f}, {"A", "", 1.5f, 1}, {"S", "", 2.5f, 1},
+      {"D", "", 3.5f, 1},         {"F", "", 4.5f, 1},  {"Ctrl", "", 0, 2, 1.5f}, {"Space", "", 1.5f, 2, 4},
+      {"LMB", "", 5.75f, 0},      {"RMB", "", 6.75f, 0}, {"Mouse", "", 5.75f, 1, 2, 2},
+  };
+  bool operator==(const OverlayConfig&) const = default;
+};
+
 struct Config {
   int clip_seconds = 30;
   std::string hotkey = "Alt+F9";
@@ -56,4 +78,5 @@ struct Config {
   std::vector<std::string> apps;  // extra apps whose audio is recorded, by exe
   std::vector<std::string> always_record, never_record;
   bool start_with_windows = true;
+  OverlayConfig overlay;
 };

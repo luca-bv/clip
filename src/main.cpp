@@ -20,7 +20,7 @@ namespace {
 enum : UINT { WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED };
 enum : UINT {
   ID_SAVE = 1, ID_PAUSE, ID_OPEN_FOLDER, ID_OPEN_CONFIG, ID_QUIT, ID_NEVER, ID_ALWAYS, ID_GAME_AUDIO, ID_MIC,
-  ID_SHORTCUT,
+  ID_SHORTCUT, ID_OVERLAY,
   ID_LENGTH = 100,  // + index into kLengths
   ID_APP = 200,     // + index into g.menu_apps
 };
@@ -170,6 +170,27 @@ Config ParseConfig(const std::string& text) {
   c.always_record = list("always_record");
   c.never_record = list("never_record");
   c.start_with_windows = t["start_with_windows"].value_or(c.start_with_windows);
+
+  auto o = t["overlay"];
+  auto& ov = c.overlay;
+  ov.enabled = o["enabled"].value_or(ov.enabled);
+  ov.corner = Lower(o["corner"].value_or(ov.corner));
+  ov.scale = std::clamp(float(o["scale"].value_or(double(ov.scale))), 0.25f, 4.f);
+  ov.opacity = std::clamp(float(o["opacity"].value_or(double(ov.opacity))), 0.f, 1.f);
+  ov.mouse_mode = Lower(o["mouse_mode"].value_or(ov.mouse_mode));
+  ov.mouse_sensitivity = std::clamp(float(o["mouse_sensitivity"].value_or(double(ov.mouse_sensitivity))), 0.01f, 100.f);
+  ov.mouse_trail_length = std::clamp(float(o["mouse_trail_length"].value_or(double(ov.mouse_trail_length))), 0.f, 100.f);
+  ov.mouse_trail_ms = std::clamp(o["mouse_trail_ms"].value_or(ov.mouse_trail_ms), 1, 10000);
+  if (auto keys = o["keys"].as_array()) {
+    ov.keys.clear();
+    for (auto& e : *keys) {
+      toml::node_view<toml::node> k{&e};
+      OverlayKey key{k["key"].value_or(std::string{}), k["label"].value_or(std::string{}),
+                     float(k["x"].value_or(0.0)),       float(k["y"].value_or(0.0)),
+                     float(k["w"].value_or(1.0)),       float(k["h"].value_or(1.0))};
+      if (!key.key.empty() && key.w > 0 && key.h > 0) ov.keys.push_back(key);
+    }
+  }
   return c;
 }
 
@@ -189,10 +210,40 @@ void SaveConfig() {
       {"always_record", arr(c.always_record)}, {"never_record", arr(c.never_record)},
       {"start_with_windows", c.start_with_windows},
   };
+  auto num = [](toml::table& kt, const char* name, float v) {  // 2 rather than 2.0 where it's whole
+    if (v == std::floor(v)) kt.insert(name, int64_t(v));
+    else kt.insert(name, double(v));
+  };
+  const OverlayConfig& ov = c.overlay;
+  toml::array keys;
+  for (auto& k : ov.keys) {
+    toml::table kt{{"key", k.key}};
+    if (!k.label.empty()) kt.insert("label", k.label);
+    num(kt, "x", k.x);
+    num(kt, "y", k.y);
+    if (k.w != 1) num(kt, "w", k.w);
+    if (k.h != 1) num(kt, "h", k.h);
+    keys.push_back(std::move(kt));
+  }
+  toml::table overlay{{"enabled", ov.enabled},          {"corner", ov.corner}, {"mouse_mode", ov.mouse_mode},
+                      {"mouse_trail_ms", ov.mouse_trail_ms}, {"keys", std::move(keys)}};
+  num(overlay, "scale", ov.scale);
+  num(overlay, "opacity", ov.opacity);
+  num(overlay, "mouse_sensitivity", ov.mouse_sensitivity);
+  num(overlay, "mouse_trail_length", ov.mouse_trail_length);
+  t.insert("overlay", std::move(overlay));
   std::ofstream f(g.cfg_path, std::ios::trunc);
   f << "# Clip settings. Edits apply while Clip runs; fps, max_height and bitrate_mbps from the next game.\n"
        "# hotkey: e.g. \"Alt+F9\", \"Ctrl+Shift+S\". clips_folder: empty = Videos\\Clip.\n"
-       "# apps / always_record / never_record: exe names, e.g. [\"spotify.exe\"].\n\n"
+       "# apps / always_record / never_record: exe names, e.g. [\"spotify.exe\"].\n"
+       "#\n"
+       "# [overlay] draws your keys and mouse movement into clips, only while the game has focus.\n"
+       "#   corner: top-left, top-right, bottom-left or bottom-right. scale: 1 = default size. opacity: 0 to 1.\n"
+       "#   mouse_mode: \"wrap\" (the dot wraps at the pad's edges) or \"pan\" (the dot stays centred, the pad scrolls).\n"
+       "#   mouse_sensitivity, mouse_trail_length: 1 = default. mouse_trail_ms: how long the trail takes to fade.\n"
+       "#   keys: one entry per box. key = A-Z, 0-9, F1-F24, Space, Shift, Ctrl, Alt, Tab, Enter, Esc, Caps,\n"
+       "#     Backspace, Up, Down, Left, Right, LMB, RMB, MMB, Mouse4, Mouse5, WheelUp, WheelDown,\n"
+       "#     or Mouse for the movement pad. x, y, w, h: position and size in key widths. label: text shown.\n\n"
     << t << "\n";
 }
 
@@ -261,6 +312,7 @@ void ApplyConfig() {
   if (Contains(g.cfg.never_record, g.session->exe)) return StopSession();
   g.session->SetClipSeconds(g.cfg.clip_seconds);
   g.session->SyncAudio(g.cfg);
+  g.session->SetOverlay(g.cfg.overlay);
 }
 
 void LoadConfig() {
@@ -276,6 +328,7 @@ void LoadConfig() {
   } catch (const toml::parse_error& e) {
     return Balloon(L"Settings not loaded", L"config.toml: " + Wide(std::string(e.description())));
   }
+  if (ss.str().find("[overlay") == std::string::npos) SaveConfig();  // older file: add the overlay section to edit
   ApplyConfig();
 }
 
@@ -544,6 +597,7 @@ void OnCommand(UINT id) {
     case ID_SHORTCUT: return ShowShortcutPicker();
     case ID_GAME_AUDIO: return ChangeConfig([](Config& c) { c.record_game_audio = !c.record_game_audio; });
     case ID_MIC: return ChangeConfig([](Config& c) { c.record_mic = !c.record_mic; });
+    case ID_OVERLAY: return ChangeConfig([](Config& c) { c.overlay.enabled = !c.overlay.enabled; });
     case ID_NEVER:
       if (g.session) {
         const std::string exe = g.session->exe;
@@ -614,6 +668,7 @@ void ShowMenu() {
   else if (!g.last_app_exe.empty() && IsWindow(g.last_app_wnd))
     AppendMenuW(m, MF_STRING, ID_ALWAYS, (L"Always record " + Wide(g.last_app_exe)).c_str());
   AppendMenuW(m, check(g.paused), ID_PAUSE, L"Pause recording");
+  AppendMenuW(m, check(c.overlay.enabled), ID_OVERLAY, L"Show keys and mouse in clips");
   AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")…").c_str());
   AppendMenuW(m, MF_STRING, ID_OPEN_FOLDER, L"Open clips folder");
   AppendMenuW(m, MF_STRING, ID_OPEN_CONFIG, L"Edit settings");

@@ -19,6 +19,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include "overlay.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -66,6 +68,7 @@ class VideoCapture {
   VideoCapture(HWND hwnd, const Config& cfg, PacketRing& ring, int64_t t0, std::function<void()> on_closed);
   ~VideoCapture();
   void SetWindow(HWND hwnd);  // the game recreated its window
+  void SetOverlay(std::shared_ptr<InputOverlay> overlay);
   bool failed() const { return failed_; }
 
  private:
@@ -76,7 +79,9 @@ class VideoCapture {
   void Loop();
   bool Encode(int64_t pts);
   void CreateProcessor(UINT in_w, UINT in_h);
-  ID3D11VideoProcessorInputView* InputView(const com_ptr<ID3D11Texture2D>& tex);
+  ID3D11VideoProcessorInputView* InputView(ID3D11Texture2D* tex);
+  void CopyFrame(ID3D11Texture2D* tex);
+  void DrawOverlay(InputOverlay& overlay);
   ID3D11VideoProcessorOutputView* OutputView(ID3D11Texture2D* tex, UINT slice);
   void Free();
 
@@ -97,8 +102,10 @@ class VideoCapture {
   std::vector<std::pair<com_ptr<ID3D11Texture2D>, com_ptr<ID3D11VideoProcessorInputView>>> in_views_;
   ID3D11Texture2D* out_tex_ = nullptr;
   std::vector<com_ptr<ID3D11VideoProcessorOutputView>> out_views_;
-  com_ptr<ID3D11Texture2D> copy_;  // only if the processor can't read capture textures directly
+  com_ptr<ID3D11Texture2D> copy_;  // frame copy to draw the overlay on, or if the processor can't read WGC textures
   bool use_copy_ = false;
+  com_ptr<ID2D1DeviceContext> d2d_;
+  com_ptr<ID2D1Bitmap1> d2d_target_;  // copy_ as a Direct2D target
 
   winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice rt_dev_{nullptr};
   winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{nullptr};
@@ -108,6 +115,7 @@ class VideoCapture {
 
   std::mutex frame_m_;
   winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame latest_{nullptr};
+  std::shared_ptr<InputOverlay> overlay_;
   winrt::Windows::Graphics::SizeInt32 pool_size_{};
 
   AVBufferRef* hw_dev_ = nullptr;
@@ -155,6 +163,7 @@ class Session {
   void SetWindow(HWND w);
   void SetClipSeconds(int s) { ring_->SetKeepSeconds(s); }
   void SyncAudio(const Config& cfg);
+  void SetOverlay(const OverlayConfig& cfg);
   bool failed() const { return video_->failed(); }
   // Saves the last `seconds` to `file` in the background; `done` gets "" or an error.
   void Save(int seconds, std::filesystem::path file, std::function<void(std::string)> done);
@@ -168,4 +177,5 @@ class Session {
   std::shared_ptr<PacketRing> ring_;  // shared with saves still running after the session ends
   std::unique_ptr<VideoCapture> video_;
   std::unique_ptr<AudioMixer> audio_;
+  std::shared_ptr<InputOverlay> overlay_;
 };

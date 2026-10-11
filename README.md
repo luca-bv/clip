@@ -10,6 +10,8 @@ Records your game in the background and saves the last 30 seconds when you press
 
 The tray menu changes the shortcut (press the keys you want), sets clip length, picks which audio is recorded (game, microphone, and any app that's playing sound, like Spotify or Discord), and has *Always record* / *Never record* for apps the fullscreen check gets wrong.
 
+*Show keys and mouse in clips* draws the keys you press and a mouse-movement pad (a trail that wraps at the edges, or pans) into the video. It's off by default, only reads input while the game has focus, and the layout is editable under `[overlay]` in the settings file.
+
 Every clip has the video, a **Mix** track with all enabled audio, and one track per audio source, for editors that can split them.
 
 ## Settings
