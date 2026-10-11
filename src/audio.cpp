@@ -49,7 +49,7 @@ com_ptr<IAudioClient> ProcessLoopback(DWORD pid) {
   return handler->client;
 }
 
-com_ptr<IAudioClient> Microphone() {
+com_ptr<IAudioClient> OpenMicrophone() {
   auto devices = winrt::create_instance<IMMDeviceEnumerator>(__uuidof(MMDeviceEnumerator));
   com_ptr<IMMDevice> dev;
   winrt::check_hresult(devices->GetDefaultAudioEndpoint(eCapture, eConsole, dev.put()));
@@ -96,7 +96,7 @@ void EncodeFrame(PacketRing& ring, int track, AVCodecContext* e, const float* st
 struct AudioMixer::Source {
   Source(std::string name_, DWORD pid_, int64_t t0)
       : name(std::move(name_)), pid(pid_), t0_hns(QpcTo(t0, 10'000'000)) {
-    client = pid ? ProcessLoopback(pid) : Microphone();
+    client = pid ? ProcessLoopback(pid) : OpenMicrophone();
     winrt::check_hresult(client->GetService(__uuidof(IAudioCaptureClient), capture.put_void()));
     winrt::check_hresult(client->SetEventHandle(event.get()));
     enc = OpenAac();
