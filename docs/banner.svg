@@ -11,6 +11,15 @@
     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
       <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
     </pattern>
+    <linearGradient id="keyside" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f333e"/>
+      <stop offset="1" stop-color="#1c1f27"/>
+    </linearGradient>
+    <linearGradient id="keytop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b404d"/>
+      <stop offset="1" stop-color="#2b2f39"/>
+    </linearGradient>
+    <filter id="blur" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="14"/></filter>
   </defs>
   <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
   <rect width="1280" height="400" rx="24" fill="url(#grid)"/>
@@ -25,7 +34,7 @@
   <text x="334" y="250" fill="#a3a9b8" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="30">Your best plays, saved. Your frames, untouched.</text>
 
   <!-- a timeline strip -->
-  <g transform="translate(334 286)">
+  <g transform="translate(334 274)">
     <rect width="600" height="34" rx="8" fill="#0b0c10" stroke="#ffffff" stroke-opacity="0.08"/>
     <g fill="#ffffff" fill-opacity="0.35">
       <rect x="14" y="13" width="3" height="8" rx="1.5"/><rect x="22" y="9" width="3" height="16" rx="1.5"/>
@@ -72,11 +81,13 @@
     <rect x="232" y="-6" width="2" height="46" fill="#ffffff"/>
   </g>
 
-  <!-- the hotkey -->
-  <g transform="translate(1000 150)">
-    <rect width="140" height="100" rx="18" fill="#1d2029" stroke="#ffffff" stroke-opacity="0.12"/>
-    <rect y="88" width="140" height="12" rx="6" fill="#000000" fill-opacity="0.35"/>
-    <text x="70" y="64" text-anchor="middle" fill="#f1f2f6" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="40" font-weight="600">F8</text>
-    <text x="70" y="140" text-anchor="middle" fill="#7d8394" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="18">saves the last 30 s</text>
-  </g>
-</svg>
+  <!-- the save key -->
+  <g transform="translate(990 106)">
+    <ellipse cx="90" cy="186" rx="96" ry="18" fill="#e83030" fill-opacity="0.35" filter="url(#blur)"/>
+    <rect x="0" y="8" width="180" height="176" rx="30" fill="#14161c"/>
+    <rect x="0" y="0" width="180" height="172" rx="30" fill="url(#keyside)" stroke="#ffffff" stroke-opacity="0.07"/>
+    <rect x="16" y="10" width="148" height="128" rx="22" fill="url(#keytop)" stroke="#ffffff" stroke-opacity="0.10"/>
+    <rect x="22" y="14" width="136" height="2" rx="1" fill="#ffffff" fill-opacity="0.10"/>
+    <text x="90" y="94" text-anchor="middle" fill="#f4f5f8" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="54" font-weight="600">F8</text>
+    <text x="90" y="232" text-anchor="middle" fill="#7d8394" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" letter-spacing="3">SAVE CLIP</text>
+  </g></svg>
