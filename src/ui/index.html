@@ -244,6 +244,10 @@ select[multiple] { width: 100%; min-height: 80px; }
           <div class="label"><b>Double-tap key</b><small id="tap-hint">Tap it twice to save. Fn usually can't be used.</small></div>
           <div class="ctl"><input type="text" id="tap" readonly><button class="btn" id="tap-btn">Change</button><button class="btn ghost" id="tap-off">Clear</button></div>
         </div>
+        <div class="row">
+          <div class="label"><b>Voice</b><small id="voice-hint"></small></div>
+          <div class="ctl"><input type="checkbox" class="switch" data-key="voice_save"></div>
+        </div>
       </div>
       <div class="group">Clips</div>
       <div class="box">
@@ -413,6 +417,9 @@ function render() {
   $("#tap-off").disabled = !c.double_tap;
   size(c.bitrate_mbps);
   $("#folder").textContent = st.folder;
+  const vh = $("#voice-hint");
+  vh.className = st.voice_error ? "err" : "";
+  vh.textContent = st.voice_error || "Say \u201cHey Clip, save that\u201d while a game records. Offline; listens only while recording.";
   $("#discord-hint").textContent = st.discord_available ? "" : "Not available in this build";
   $("#empty-hint").textContent = "Press " + c.hotkey + (c.double_tap ? " or double-tap " + (keyNames[c.double_tap] || c.double_tap) : "") +
     " in a game to save the last " + c.clip_seconds + " seconds.";

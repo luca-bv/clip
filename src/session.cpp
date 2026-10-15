@@ -43,8 +43,8 @@ void Session::SetOverlay(const OverlayConfig& cfg) {
   }
 }
 
-void Session::Save(int seconds, fs::path file, std::function<void(std::string)> done) {
-  const int64_t end_us = QpcTo(QpcNow() - t0_, 1000000);
+void Session::Save(int seconds, fs::path file, std::function<void(std::string)> done, double end_ago) {
+  const int64_t end_us = std::max<int64_t>(0, QpcTo(QpcNow() - t0_, 1000000) - int64_t(end_ago * 1e6));
   std::thread([ring = ring_, end_us, seconds, file = std::move(file), done = std::move(done)] {
     SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);  // low CPU and I/O priority
     Sleep(500);  // let the encoders catch up to the hotkey moment

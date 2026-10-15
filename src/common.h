@@ -112,6 +112,7 @@ struct Config {
   std::string share_size = "discord";  // clipboard copies: "discord" (fits 10 MB) or "original"
   bool watermark = true;             // "Clipped with Clip" badge on exports and clipboard copies; recordings stay clean
   bool discord_presence = true;      // Discord activity: the game, "Clipping with Clip" and a link to the repo
+  bool voice_save = false;  // "Hey Clip, save that" saves a clip; listens only while a game records
   bool share_caption = true;         // "#ClippedWithClip on <date>" pasted after a copied clip
   std::string double_tap = "RCtrl";  // second shortcut: this key tapped twice; "" = off
   OverlayConfig overlay;

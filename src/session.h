@@ -132,8 +132,8 @@ class Session {
   void SyncAudio(const Config& cfg);
   void SetOverlay(const OverlayConfig& cfg);
   bool failed() const { return video_->failed(); }
-  // Saves the last `seconds` to `file` in the background; `done` gets "" or an error.
-  void Save(int seconds, std::filesystem::path file, std::function<void(std::string)> done);
+  // Saves `seconds` ending `end_ago` seconds back to `file` in the background; `done` gets "" or an error.
+  void Save(int seconds, std::filesystem::path file, std::function<void(std::string)> done, double end_ago = 0);
 
   const DWORD pid;
   const std::string exe;

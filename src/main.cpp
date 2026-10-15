@@ -3,6 +3,7 @@
 #include "games.h"
 #include "session.h"
 #include "settings.h"
+#include "voice.h"
 
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
@@ -26,7 +27,7 @@ namespace json = winrt::Windows::Data::Json;
 
 namespace {
 enum : UINT {
-  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY
+  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL
 };
 // Discord application whose name Discord shows as "Playing …". Empty turns the Discord activity off.
 constexpr char kDiscordAppId[] = "1560105311728308347";
@@ -74,6 +75,8 @@ struct {
   HWND picker = nullptr;  // "Change shortcut" window while open
   std::wstring picker_text;
   std::unique_ptr<DoubleTap> double_tap;  // listens only while recording
+  std::unique_ptr<VoiceSave> voice;       // so does this
+  std::string voice_error;
   std::string double_tap_key;
   std::string hotkey_error;  // why the shortcut isn't registered, shown in settings
   bool page_picking = false;  // the settings window is capturing a new shortcut
@@ -273,6 +276,7 @@ Config ParseConfig(const std::string& text) {
   if (c.share_size != "original") c.share_size = "discord";
   c.discord_presence = t["discord_presence"].value_or(c.discord_presence);
   c.share_caption = t["share_caption"].value_or(c.share_caption);
+  c.voice_save = t["voice_save"].value_or(c.voice_save);
   c.double_tap = t["double_tap"].value_or(c.double_tap);
 
   auto o = t["overlay"];
@@ -327,7 +331,7 @@ toml::table ConfigTable(const Config& c) {
       {"start_with_windows", c.start_with_windows}, {"copy_to_clipboard", c.copy_to_clipboard},
       {"watermark", c.watermark},         {"double_tap", c.double_tap},
       {"share_size", c.share_size},       {"discord_presence", c.discord_presence},
-      {"share_caption", c.share_caption},
+      {"share_caption", c.share_caption}, {"voice_save", c.voice_save},
   };
   auto num = [](toml::table& kt, const char* name, float v) {  // 2 rather than 2.0 where it's whole
     if (v == std::floor(v)) kt.insert(name, int64_t(v));
@@ -453,6 +457,17 @@ void EnsureStartMenuShortcut() {
 
 void StopSession();
 
+void SyncVoice() {
+  const bool want = g.session && g.cfg.voice_save;
+  if (want == bool(g.voice)) return;
+  g.voice.reset();
+  if (!want) return;
+  g.voice_error.clear();
+  g.voice = std::make_unique<VoiceSave>(
+      [](double ago) { PostMessageW(g.wnd, WM_VOICE_SAVE, WPARAM(ago * 1000), 0); },
+      [](std::string why) { PostMessageW(g.wnd, WM_VOICE_FAIL, 0, LPARAM(new std::string(std::move(why)))); });
+}
+
 void SyncDoubleTap() {
   const std::string want = g.session ? g.cfg.double_tap : "";
   if (want == g.double_tap_key) return;
@@ -489,6 +504,7 @@ void ApplyConfig() {
   }
   SetRunAtLogin(g.cfg.start_with_windows);
   SyncDoubleTap();
+  SyncVoice();
   SyncDiscord();
   SettingsPush();
   if (!g.session) return;
@@ -640,6 +656,7 @@ void StopSession() {
   g.exit_wait = g.proc = nullptr;
   g.session.reset();
   SyncDoubleTap();
+  SyncVoice();
   SyncDiscord();
   KillTimer(g.wnd, kSyncTimer);
   UpdateTip();
@@ -672,6 +689,7 @@ void StartSession(HWND w, DWORD pid, const std::string& exe) {
   g.session_title = GameName(pid, exe);
   g.session_since = int64_t(time(nullptr));
   SyncDoubleTap();
+  SyncVoice();
   SyncDiscord();
   UpdateTip();
 }
@@ -756,7 +774,7 @@ std::wstring GameName(DWORD pid, const std::string& exe) {
   return name;
 }
 
-void SaveClip() {
+void SaveClip(double end_ago = 0) {
   if (!g.session) return PlayChime(false);
   const ULONGLONG now = GetTickCount64();
   if (now - g.last_save < 1000) return;  // double press
@@ -778,9 +796,9 @@ void SaveClip() {
   auto name = std::format(L"{} - Clipped with Clip - {:04}-{:02}-{:02} {:02}-{:02}-{:02}.mp4", title, t.wYear, t.wMonth,
                           t.wDay, t.wHour, t.wMinute, t.wSecond);
   const fs::path file = folder / name;
-  g.session->Save(g.cfg.clip_seconds, file, [file](std::string err) {
-    PostMessageW(g.wnd, WM_SAVED, 0, LPARAM(new Saved{std::move(err), file}));
-  });
+  g.session->Save(
+      g.cfg.clip_seconds, file,
+      [file](std::string err) { PostMessageW(g.wnd, WM_SAVED, 0, LPARAM(new Saved{std::move(err), file})); }, end_ago);
 }
 
 HGLOBAL GlobalText(const std::wstring& s) {
@@ -1258,7 +1276,8 @@ void SettingsPush() {
                 {"presets", std::move(presets)},
                 {"preset", preset},
                 {"folder", Utf8(ClipsFolder().wstring())},
-                {"discord_available", kDiscordAppId[0] != 0}};
+                {"discord_available", kDiscordAppId[0] != 0},
+                {"voice_error", g.voice_error}};
   std::stringstream ss;
   ss << toml::json_formatter{t};
   SettingsPost(ss.str());
@@ -1463,6 +1482,17 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_HOTKEY: SaveClip(); return 0;
+    case WM_VOICE_SAVE:  // the clip ends where the phrase began
+      Log("voice: heard the phrase");
+      SaveClip(double(wp) / 1000);
+      return 0;
+    case WM_VOICE_FAIL: {
+      std::unique_ptr<std::string> why(reinterpret_cast<std::string*>(lp));
+      Log("voice: {}", *why);
+      g.voice_error = *why;
+      SettingsPush();
+      return 0;
+    }
     case WM_RENDERFORMAT:
       if (wp == CF_HDROP) RenderClipboardFile();
       return 0;

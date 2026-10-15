@@ -10,6 +10,7 @@
 
 #include "../src/export.h"
 #include "../src/session.h"
+#include "../src/voice.h"
 
 void LogLine(const std::string& s) {
   std::printf("    clip: %s\n", s.c_str());
@@ -191,6 +192,15 @@ int main(int argc, char** argv) {
                              0, kW, kH, nullptr, nullptr, wc.hInstance, nullptr);
   ShowWindow(wnd, SW_SHOWNOACTIVATE);
 
+  if (argc > 1 && std::string_view(argv[1]) == "voice") {  // listen for the phrase for a few seconds
+    {
+      VoiceSave v([](double ago) { std::printf("heard it, began %.1f s ago\n", ago); },
+                  [](std::string why) { std::printf("failed: %s\n", why.c_str()); });
+      Sleep(argc > 2 ? atoi(argv[2]) * 1000 : 4000);
+    }
+    std::printf("voice: done\n");
+    return 0;
+  }
   // clip_bench export in.mp4 out.mp4 <all|a-b,c-d> [MB] [audio track, -1 = none] [vertical crop 0..1]
   if (argc > 4 && std::string_view(argv[1]) == "export") {
     ExportOptions o;
