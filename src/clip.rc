@@ -1,0 +1,7 @@
+1 ICON "clip.ico"
+100 RCDATA "ui/index.html"
+101 RCDATA "ui/vendor/wavesurfer.min.js"
+102 RCDATA "ui/vendor/regions.min.js"
+103 RCDATA "ui/vendor/timeline.min.js"
+104 RCDATA "ui/vendor/zoom.min.js"
+105 RCDATA "ui/vendor/hover.min.js"

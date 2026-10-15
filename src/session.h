@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "gpu.h"
 #include "overlay.h"
 #include "ring.h"
 
@@ -35,7 +36,7 @@ class VideoCapture {
   bool failed() const { return failed_; }
 
  private:
-  void CreateDevice();
+  void CreateDevice(int gpu_priority);
   void OpenEncoder(const Config& cfg);
   void StartCapture(winrt::Windows::Graphics::Capture::GraphicsCaptureItem item);
   void StopCapture();
@@ -45,7 +46,7 @@ class VideoCapture {
   ID3D11VideoProcessorInputView* InputView(ID3D11Texture2D* tex);
   void CopyFrame(ID3D11Texture2D* tex);
   void DrawOverlay(InputOverlay& overlay);
-  ID3D11VideoProcessorOutputView* OutputView(ID3D11Texture2D* tex, UINT slice);
+  void EnsureD2D();
   void Free();
 
   PacketRing& ring_;
@@ -63,12 +64,12 @@ class VideoCapture {
   com_ptr<ID3D11VideoProcessor> vp_;
   UINT vp_w_ = 0, vp_h_ = 0;
   std::vector<std::pair<com_ptr<ID3D11Texture2D>, com_ptr<ID3D11VideoProcessorInputView>>> in_views_;
-  ID3D11Texture2D* out_tex_ = nullptr;
-  std::vector<com_ptr<ID3D11VideoProcessorOutputView>> out_views_;
+  OutputViews out_views_;
   com_ptr<ID3D11Texture2D> copy_;  // frame copy to draw the overlay on, or if the processor can't read WGC textures
   bool use_copy_ = false;
   com_ptr<ID2D1DeviceContext> d2d_;
   com_ptr<ID2D1Bitmap1> d2d_target_;  // copy_ as a Direct2D target
+
 
   winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice rt_dev_{nullptr};
   winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{nullptr};
@@ -84,6 +85,8 @@ class VideoCapture {
   AVBufferRef* hw_dev_ = nullptr;
   AVBufferRef* hw_frames_ = nullptr;
   AVCodecContext* enc_ = nullptr;
+  AVFrame* last_ = nullptr;  // last converted surface, re-sent when the game shows the same frame
+  bool reuse_ = false;
 
   int64_t last_frame_time_ = -1, repeats_ = 0;  // video thread only
   std::atomic<bool> stop_{false}, failed_{false};

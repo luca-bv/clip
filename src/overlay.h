@@ -15,6 +15,7 @@
 #include <set>
 #include <thread>
 
+#include "input.h"
 #include "trail.h"
 
 // Mouse counts to key widths for a pad of size 1 (300x200 px pads cross in ~6000 counts), and the
@@ -67,8 +68,8 @@ class OverlayPainter {
   winrt::com_ptr<IDWriteTextFormat> text_format_;
 };
 
-// Keys and mouse movement of the game being recorded, drawn onto frames. Reads Raw Input from its own
-// thread, and only while the game has focus, so nothing typed into other apps shows up.
+// Keys and mouse movement of the game being recorded, drawn onto frames. Reads Raw Input only while
+// the game has focus, so nothing typed into other apps shows up.
 class InputOverlay {
  public:
   InputOverlay(const OverlayConfig& cfg, DWORD game_pid);
@@ -77,16 +78,14 @@ class InputOverlay {
   void Draw(ID2D1DeviceContext* dc, D2D1_SIZE_F frame);  // video thread only
 
  private:
-  void Loop(std::promise<void>* started);
-  void OnInput(HRAWINPUT h);
+  void OnInput(const RAWINPUT& ri);
 
   const OverlayConfig cfg_;
   const DWORD pid_;
   OverlayPainter painter_;
   std::mutex m_;
   OverlayInput in_;
-  std::atomic<DWORD> thread_id_{0};
-  std::thread thread_;
+  int listen_id_;
 };
 
 // The tray's "Edit overlay" window. `save` gets the edited settings.

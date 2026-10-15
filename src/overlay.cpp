@@ -222,17 +222,10 @@ void OverlayPainter::DrawPad(ID2D1DeviceContext* dc, D2D1_RECT_F r, float u, Ove
 
 // ---- input ----
 
-InputOverlay::InputOverlay(const OverlayConfig& cfg, DWORD game_pid) : cfg_(cfg), pid_(game_pid), painter_(cfg) {
-  std::promise<void> started;
-  auto ready = started.get_future();
-  thread_ = std::thread(&InputOverlay::Loop, this, &started);
-  ready.wait();
-}
+InputOverlay::InputOverlay(const OverlayConfig& cfg, DWORD game_pid)
+    : cfg_(cfg), pid_(game_pid), painter_(cfg), listen_id_(raw_input::Listen([this](auto& ri) { OnInput(ri); })) {}
 
-InputOverlay::~InputOverlay() {
-  PostThreadMessageW(thread_id_, WM_QUIT, 0, 0);
-  thread_.join();
-}
+InputOverlay::~InputOverlay() { raw_input::Unlisten(listen_id_); }
 
 void InputOverlay::Draw(ID2D1DeviceContext* dc, D2D1_SIZE_F frame) {
   float u;
@@ -242,44 +235,7 @@ void InputOverlay::Draw(ID2D1DeviceContext* dc, D2D1_SIZE_F frame) {
   painter_.Draw(dc, origin, u, in_, QpcNow());
 }
 
-void InputOverlay::Loop(std::promise<void>* started) {
-  // A message-only window that gets Raw Input even while the game has focus (no hooks, nothing in the game).
-  HINSTANCE inst = GetModuleHandleW(nullptr);
-  WNDCLASSW wc{};
-  wc.lpfnWndProc = DefWindowProcW;
-  wc.hInstance = inst;
-  wc.lpszClassName = L"ClipInput";
-  RegisterClassW(&wc);  // fails harmlessly on the second overlay
-  HWND w = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
-  RAWINPUTDEVICE devs[] = {{0x01, 0x06, RIDEV_INPUTSINK, w}, {0x01, 0x02, RIDEV_INPUTSINK, w}};  // keyboard, mouse
-  if (!w || !RegisterRawInputDevices(devs, 2, sizeof devs[0])) Log("input overlay: no input ({})", GetLastError());
-  thread_id_ = GetCurrentThreadId();
-  started->set_value();
-
-  MSG msg;
-  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-    if (msg.message == WM_INPUT) OnInput(HRAWINPUT(msg.lParam));
-    DispatchMessageW(&msg);
-  }
-  // Raw Input registrations are per process: a newer overlay may own them now, so only remove ours.
-  RAWINPUTDEVICE cur[8];
-  UINT n = UINT(std::size(cur));
-  n = GetRegisteredRawInputDevices(cur, &n, sizeof cur[0]);
-  for (UINT i = 0; n != UINT(-1) && i < n; i++)
-    if (cur[i].hwndTarget == w) {
-      RAWINPUTDEVICE d = cur[i];
-      d.dwFlags = RIDEV_REMOVE;
-      d.hwndTarget = nullptr;
-      RegisterRawInputDevices(&d, 1, sizeof d);
-    }
-  if (w) DestroyWindow(w);
-}
-
-void InputOverlay::OnInput(HRAWINPUT h) {
-  RAWINPUT ri;
-  UINT size = sizeof ri;
-  if (GetRawInputData(h, RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == UINT(-1)) return;
-
+void InputOverlay::OnInput(const RAWINPUT& ri) {
   DWORD fg = 0;
   GetWindowThreadProcessId(GetForegroundWindow(), &fg);
   std::lock_guard l(m_);

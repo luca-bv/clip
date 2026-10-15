@@ -96,10 +96,11 @@ struct OverlayConfig {
 
 struct Config {
   int clip_seconds = 30;
-  std::string hotkey = "Alt+F9";
+  std::string hotkey = "F8";  // one key, free of NVIDIA (Alt+F9/F10), Steam (F12) and Game Bar (Win+G)
   int fps = 60;
   int max_height = 1080;
   int bitrate_mbps = 20;
+  int gpu_priority = -7;  // -7..0; lowest lets the game's GPU work always run before ours
   std::string clips_folder;  // empty = <Videos>\Clip
   int min_free_gb = 2;
   bool record_game_audio = true;
@@ -107,5 +108,11 @@ struct Config {
   std::vector<std::string> apps;  // extra apps whose audio is recorded, by exe
   std::vector<std::string> always_record, never_record;
   bool start_with_windows = true;
+  bool copy_to_clipboard = true;     // each saved clip, as a file Ctrl+V pastes into Discord or Explorer
+  std::string share_size = "discord";  // clipboard copies: "discord" (fits 10 MB) or "original"
+  bool watermark = true;             // "Clipped with Clip" badge on exports and clipboard copies; recordings stay clean
+  bool discord_presence = true;      // Discord activity: the game, "Clipping with Clip" and a link to the repo
+  bool share_caption = true;         // "#ClippedWithClip on <date>" pasted after a copied clip
+  std::string double_tap = "RCtrl";  // second shortcut: this key tapped twice; "" = off
   OverlayConfig overlay;
 };

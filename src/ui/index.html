@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clip</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0e0f13; --side: #121419; --card: #181b22; --card-2: #20242d; --hover: #262b36; --line: #2a2f3a;
+  --text: #e9ebf1; --dim: #9aa0ae; --faint: #666c7b; --accent: #e83030; --accent-2: #ff4848; --err: #ff6b5e;
+  --r: 10px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+body { display: grid; grid-template-columns: 210px minmax(0, 1fr); overflow: hidden; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* sidebar */
+aside { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 16px 10px; gap: 2px; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 600; padding: 2px 10px 18px; }
+.brand i { width: 22px; height: 22px; border-radius: 6px; background: #1c1c22; display: grid; place-items: center; }
+.brand i::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+aside nav button { all: unset; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--dim); cursor: pointer; }
+aside nav button:hover { background: var(--card); color: var(--text); }
+aside nav button.on { background: var(--card-2); color: var(--text); }
+aside .grow { flex: 1; }
+.status { background: var(--card); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.status .line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.status .line span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.rec { background: var(--accent); box-shadow: 0 0 0 3px rgba(232, 48, 48, .22); }
+.dot.paused { background: #e0a82e; }
+.status #msg { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+.status #msg.err { color: var(--err); }
+.status .btns { display: flex; gap: 6px; }
+
+/* common controls */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; border-radius: 8px;
+  background: var(--card-2); border: 1px solid var(--line); white-space: nowrap; }
+.btn:hover { background: var(--hover); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-2); }
+.btn.icon { padding: 7px; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--dim); }
+.btn.ghost:hover { background: var(--card-2); color: var(--text); }
+.btn.wide { flex: 1; }
+select, input[type=text], input[type=number], input[type=search] { background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; outline: none; }
+select:focus, input:focus { border-color: #4a5164; }
+input[type=number] { width: 72px; }
+.switch { appearance: none; width: 36px; height: 20px; border-radius: 999px; background: #3a3f4c; position: relative; cursor: pointer; flex: none; margin: 0; transition: background .15s; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(16px); }
+.hint { color: var(--dim); }
+.err { color: var(--err); }
+.seg { display: inline-flex; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg button { border: 0; background: transparent; color: var(--dim); padding: 4px 10px; border-radius: 6px; }
+.seg button.on { background: var(--hover); color: var(--text); }
+
+/* pages */
+main { overflow-y: auto; padding: 22px 26px 30px; }
+.page { display: none; }
+.page.on { display: block; }
+.head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.head h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.head .count { color: var(--faint); }
+.head .grow { flex: 1; }
+.search { position: relative; }
+.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--faint); }
+.search input { padding-left: 30px; width: 220px; }
+
+/* library */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+.chip { border: 1px solid var(--line); background: var(--card); color: var(--dim); padding: 4px 11px; border-radius: 999px; }
+.chip:hover { color: var(--text); }
+.chip.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 18px 16px; }
+.card { cursor: pointer; min-width: 0; }
+.thumb { position: relative; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; background: #000; transition: transform .15s; }
+.card:hover .thumb { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(0, 0, 0, .45); }
+.thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.trow { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.trow .title { flex: 1; margin-top: 0 !important; }
+.qc { width: 26px; height: 26px; border-radius: 7px; border: 0; padding: 0; flex: none; background: var(--card-2); color: var(--dim);
+  display: grid; place-items: center; opacity: 0; transition: opacity .15s, background .15s, color .15s; }
+.qc:hover { background: var(--hover); color: var(--text); }
+.card:hover .qc, .qc.busy, .qc.done, .qc.fail { opacity: 1; }
+.qc.done { background: #1f9d55; color: #fff; }
+.qc.fail { background: var(--accent); color: #fff; }
+.spin { width: 14px; height: 14px; border: 2px solid rgba(255, 255, 255, .3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.thumb .dur { position: absolute; right: 8px; bottom: 8px; background: rgba(0, 0, 0, .75); padding: 1px 6px; border-radius: 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.card .title { margin-top: 8px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .meta { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty { text-align: center; padding: 70px 20px; color: var(--dim); }
+.empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+
+/* editor */
+#editor { display: flex; flex-direction: column; gap: 12px; max-width: 1200px; }
+.ehead { display: flex; align-items: center; gap: 8px; }
+.ehead input { flex: 1; background: transparent; border-color: transparent; font-size: 16px; font-weight: 600; padding: 4px 8px; }
+.ehead input:hover, .ehead input:focus { background: var(--card); border-color: var(--line); }
+.stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; cursor: pointer; }
+#player { display: block; width: 100%; max-height: 58vh; background: #000; }
+.stage .paused { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.stage .paused span { width: 64px; height: 64px; border-radius: 50%; background: rgba(0, 0, 0, .55); display: grid; place-items: center; }
+.stage .paused svg { width: 28px; height: 28px; fill: #fff; stroke: none; margin-left: 4px; }
+#crop { position: absolute; top: 0; bottom: 0; border: 2px solid #fff; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .6); cursor: ew-resize; display: none; }
+.panel { background: var(--card); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.readout { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+#wave { background: #0b0c10; border-radius: 8px; overflow: hidden; }
+#wave ::part(region-handle) { width: 6px; border: 0; background: var(--accent); }
+#wave ::part(region) { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+.exportbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.exportbar .grow { flex: 1; }
+progress { width: 150px; height: 6px; accent-color: var(--accent); }
+
+/* settings */
+.tabs { display: flex; gap: 4px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+.tabs button { all: unset; padding: 8px 12px; color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button:hover { color: var(--text); }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.tab { display: none; max-width: 720px; }
+.tab.on { display: block; }
+.group { font-size: 12px; font-weight: 600; color: var(--dim); margin: 18px 2px 8px; }
+.group:first-child { margin-top: 0; }
+.box { background: var(--card); border-radius: 12px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-height: 52px; }
+.row + .row { border-top: 1px solid var(--line); }
+.row .label { flex: 1; min-width: 0; }
+.row .label b { display: block; font-weight: 500; }
+.row .label small { display: block; color: var(--dim); font-size: 12px; }
+.row .ctl { display: flex; align-items: center; gap: 6px; }
+.row .ctl input[type=text] { width: 150px; }
+select[multiple] { width: 100%; min-height: 80px; }
+.quiet { opacity: .65; margin-top: 26px; }
+.quiet .box { background: transparent; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.5"/><path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/></symbol>
+  <symbol id="i-export" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></symbol>
+  <symbol id="i-record" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></symbol>
+</svg>
+
+<aside>
+  <div class="brand"><i></i>Clip</div>
+  <nav>
+    <button data-view="clips" class="on"><svg class="i"><use href="#i-film"/></svg>Clips</button>
+    <button data-view="settings"><svg class="i"><use href="#i-sliders"/></svg>Settings</button>
+  </nav>
+  <div class="grow"></div>
+  <div class="status">
+    <div class="line" id="status"><span class="dot"></span><span>Waiting for a game</span></div>
+    <div id="msg"></div>
+    <div class="btns">
+      <button class="btn primary wide" id="save-now"><svg class="i"><use href="#i-record"/></svg>Save clip</button>
+      <button class="btn icon" id="show-last" title="Show the last clip" hidden><svg class="i"><use href="#i-folder"/></svg></button>
+    </div>
+  </div>
+</aside>
+
+<main>
+  <div class="page on" id="clips">
+    <div id="library">
+      <div class="head">
+        <h1>Clips</h1><span class="count" id="count"></span>
+        <span class="grow"></span>
+        <label class="search"><svg class="i"><use href="#i-search"/></svg><input type="search" id="search" placeholder="Search clips"></label>
+        <select id="sort" title="Sort"><option value="new">Newest</option><option value="old">Oldest</option><option value="big">Largest</option></select>
+        <button class="btn icon" id="refresh" title="Refresh"><svg class="i"><use href="#i-refresh"/></svg></button>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden><b>No clips yet</b><span id="empty-hint">Save one while a game records and it shows up here.</span></div>
+    </div>
+    <div id="editor" hidden>
+      <div class="ehead">
+        <button class="btn icon ghost" id="back" title="All clips"><svg class="i"><use href="#i-back"/></svg></button>
+        <input type="text" id="clip-name" spellcheck="false" title="Rename: type and press Enter">
+        <button class="btn icon ghost" id="show-clip" title="Show in folder"><svg class="i"><use href="#i-folder"/></svg></button>
+        <button class="btn icon ghost" id="delete-clip" title="Delete"><svg class="i"><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="stage" id="stage"><video id="player" preload="auto" crossorigin="anonymous"></video>
+        <div class="paused" id="paused-mark"><span><svg class="i"><use href="#i-play"/></svg></span></div><div id="crop"></div></div>
+      <div class="panel">
+        <div class="readout"><span id="time">0:00.0 / 0:00.0</span><span id="kept"></span></div>
+        <div id="wave"></div>
+      </div>
+      <div class="exportbar">
+        <span class="seg" id="shape"><button data-v="wide" class="on">16:9</button><button data-v="tall">9:16</button></span>
+        <select id="ex-audio" title="Audio"><option value="0">All audio</option></select>
+        <select id="ex-preset" title="Quality">
+          <option value="original">Original quality</option>
+          <option value="discord">Discord (10 MB)</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+        </select>
+        <span class="grow hint" id="ex-result"></span>
+        <progress id="ex-progress" max="100" hidden></progress>
+        <button class="btn" id="ex-cancel" hidden>Cancel</button>
+        <button class="btn" id="ex-show" hidden><svg class="i"><use href="#i-folder"/></svg>Show</button>
+        <button class="btn" id="copy"><svg class="i"><use href="#i-copy"/></svg>Copy</button>
+        <button class="btn primary" id="export"><svg class="i"><use href="#i-export"/></svg>Export</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="settings">
+    <div class="head"><h1>Settings</h1></div>
+    <div class="tabs">
+      <button data-tab="general" class="on">General</button>
+      <button data-tab="recording">Recording</button>
+      <button data-tab="audio">Audio</button>
+      <button data-tab="games">Games</button>
+      <button data-tab="overlay">Input overlay</button>
+      <button data-tab="storage">Storage</button>
+    </div>
+
+    <section class="tab on" id="general">
+      <div class="group">Shortcuts</div>
+      <div class="box">
+        <div class="row">
+          <div class="label"><b>Save clip</b><small class="err" id="hotkey-err"></small></div>
+          <div class="ctl"><input type="text" id="hotkey" readonly><button class="btn" id="hotkey-btn">Change</button></div>
+        </div>
+        <div class="row">
+          <div class="label"><b>Double-tap key</b><small id="tap-hint">Tap it twice to save. Fn usually can't be used.</small></div>
+          <div class="ctl"><input type="text" id="tap" readonly><button class="btn" id="tap-btn">Change</button><button class="btn ghost" id="tap-off">Clear</button></div>
+        </div>
+      </div>
+      <div class="group">Clips</div>
+      <div class="box">
+        <div class="row">
+          <div class="label"><b>Clip length</b><small>How far back a saved clip goes</small></div>
+          <div class="ctl"><select data-key="clip_seconds">
+            <option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option>
+            <option value="120">2 minutes</option><option value="300">5 minutes</option></select></div>
+        </div>
+        <div class="row">
+          <div class="label"><b>Copy saved clips</b><small>Ready to paste into Discord right after saving</small></div>
+          <div class="ctl"><input type="checkbox" class="switch" data-key="copy_to_clipboard"></div>
+        </div>
+        <div class="row">
+          <div class="label"><b>Copy size</b></div>
+          <div class="ctl"><select data-key="share_size" data-type="string">
+            <option value="discord">Discord (under 10 MB)</option><option value="original">Original quality</option></select></div>
+        </div>
+      </div>
+      <div class="group">App</div>
+      <div class="box">
+        <div class="row">
+          <div class="label"><b>Start with Windows</b><small>Waits in the tray and records when a game opens</small></div>
+          <div class="ctl"><input type="checkbox" class="switch" data-key="start_with_windows"></div>
+        </div>
+      </div>
+      <div class="quiet">
+        <div class="group">Credit</div>
+        <div class="box">
+          <div class="row"><div class="label">"Clipped with Clip" badge on exports and copies</div><div class="ctl"><input type="checkbox" class="switch" data-key="watermark"></div></div>
+          <div class="row"><div class="label">"#ClippedWithClip" text when pasting</div><div class="ctl"><input type="checkbox" class="switch" data-key="share_caption"></div></div>
+          <div class="row"><div class="label">"Clipping &lt;game&gt; with Clip" in Discord<small id="discord-hint"></small></div><div class="ctl"><input type="checkbox" class="switch" data-key="discord_presence"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab" id="recording">
+      <div class="box">
+        <div class="row">
+          <div class="label"><b>Pause recording</b><small>Stops recording games until turned back on</small></div>
+          <div class="ctl"><input type="checkbox" class="switch" id="paused"></div>
+        </div>
+      </div>
+      <div class="group">Video, from the next game</div>
+      <div class="box">
+        <div class="row">
+          <div class="label"><b>Frame rate</b></div>
+          <div class="ctl"><select data-key="fps"><option value="30">30 fps</option><option value="60">60 fps</option>
+            <option value="120">120 fps</option><option value="144">144 fps</option></select></div>
+        </div>
+        <div class="row">
+          <div class="label"><b>Resolution</b><small>Up to this height; smaller games aren't upscaled</small></div>
+          <div class="ctl"><select data-key="max_height"><option value="720">720p</option><option value="1080">1080p</option>
+            <option value="1440">1440p</option><option value="2160">2160p</option></select></div>
+        </div>
+        <div class="row">
+          <div class="label"><b>Bitrate</b><small id="size"></small></div>
+          <div class="ctl"><input type="number" id="bitrate" data-key="bitrate_mbps" min="1" max="150"> Mbit/s</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab" id="audio">
+      <div class="box">
+        <div class="row"><div class="label"><b>Game</b><small>Sound from the game being recorded</small></div><div class="ctl"><input type="checkbox" class="switch" data-key="record_game_audio"></div></div>
+        <div class="row"><div class="label"><b>Microphone</b><small>Your default microphone</small></div><div class="ctl"><input type="checkbox" class="switch" data-key="record_mic"></div></div>
+      </div>
+      <div class="group">Other apps</div>
+      <div class="box" id="apps"></div>
+      <p class="hint">Each source is saved as its own track, plus one mixed track.</p>
+    </section>
+
+    <section class="tab" id="games">
+      <div class="box">
+        <div class="row"><div class="label"><b id="game-now">No game is recording</b><small>Clip records a fullscreen or borderless window that has focus</small></div>
+          <div class="ctl"><button class="btn" data-act="neverRecord" id="never-now">Never record</button></div></div>
+      </div>
+      <div class="group">Always record</div>
+      <div class="box"><div class="row"><select multiple id="always"></select><button class="btn" data-remove="always" data-key="always_record">Remove</button></div></div>
+      <div class="group">Never record</div>
+      <div class="box"><div class="row"><select multiple id="never"></select><button class="btn" data-remove="never" data-key="never_record">Remove</button></div></div>
+    </section>
+
+    <section class="tab" id="overlay">
+      <div class="box">
+        <div class="row"><div class="label"><b>Show keys and mouse in clips</b><small>Only while the game has focus</small></div><div class="ctl"><input type="checkbox" class="switch" data-key="overlay.enabled"></div></div>
+        <div class="row"><div class="label"><b>Layout</b></div><div class="ctl"><select id="preset"></select><button class="btn" data-act="editOverlay">Edit</button></div></div>
+      </div>
+    </section>
+
+    <section class="tab" id="storage">
+      <div class="box">
+        <div class="row"><div class="label"><b>Clips folder</b><small id="folder"></small></div>
+          <div class="ctl"><button class="btn" data-act="browseFolder">Change</button><button class="btn" data-act="openFolder">Open</button></div></div>
+        <div class="row"><div class="label"><b>Keep free space</b><small>Won't save a clip when the drive has less than this</small></div>
+          <div class="ctl"><input type="number" id="min-free" data-key="min_free_gb" min="0" max="1000"> GB</div></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="vendor/wavesurfer.min.js"></script>
+<script src="vendor/regions.min.js"></script>
+<script src="vendor/timeline.min.js"></script>
+<script src="vendor/hover.min.js"></script>
+<script src="vendor/zoom.min.js"></script>
+<script>
+const $ = (q) => document.querySelector(q);
+const send = (m) => window.chrome.webview.postMessage(m);
+// Script errors go to Clip's log, since the window has no developer tools.
+window.addEventListener("error", (e) => send({ type: "log", text: e.message + " at " + (e.filename || "").split("/").pop() + ":" + e.lineno }));
+window.addEventListener("unhandledrejection", (e) => send({ type: "log", text: "unhandled: " + (e.reason && e.reason.message || e.reason) }));
+const set = (key, value) => send({ type: "set", key, value });
+const act = (name, extra) => send(Object.assign({ type: "action", name }, extra || {}));
+let st = null;
+
+const keyNames = { RCtrl: "Right Ctrl", LCtrl: "Left Ctrl", RAlt: "Right Alt", LAlt: "Left Alt", RShift: "Right Shift",
+  LShift: "Left Shift", Caps: "Caps Lock", RWin: "Right Win", ScrollLock: "Scroll Lock" };
+const cfg = (key) => key.split(".").reduce((o, k) => (o ? o[k] : undefined), st.config);
+
+document.querySelectorAll("aside nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("aside nav button, .page").forEach((e) => e.classList.remove("on"));
+  b.classList.add("on");
+  $("#" + b.dataset.view).classList.add("on");
+});
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".tabs button, .tab").forEach((e) => e.classList.remove("on"));
+  b.classList.add("on");
+  $("#" + b.dataset.tab).classList.add("on");
+});
+document.querySelectorAll("input[type=checkbox][data-key]").forEach((c) => c.onchange = () => set(c.dataset.key, c.checked));
+document.querySelectorAll("select[data-key], input[type=number][data-key]").forEach((e) =>
+  e.onchange = () => set(e.dataset.key, e.dataset.type === "string" ? e.value : Math.round(+e.value || 0)));
+document.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => act(b.dataset.act));
+document.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => {
+  const gone = [...$("#" + b.dataset.remove).selectedOptions].map((o) => o.value);
+  set(b.dataset.key, cfg(b.dataset.key).filter((e) => !gone.includes(e)));
+});
+$("#preset").onchange = () => set("overlay.preset", +$("#preset").value);
+$("#paused").onchange = () => act("togglePause");
+$("#save-now").onclick = () => { say("Saving…"); act("saveClip"); };
+$("#show-last").onclick = () => act("showLast");
+function say(text, err) {
+  $("#msg").textContent = text;
+  $("#msg").className = err ? "err" : "";
+}
+$("#tap-off").onclick = () => set("double_tap", "");
+$("#bitrate").oninput = () => size(+$("#bitrate").value);
+
+function size(mbps) {
+  $("#size").textContent = "About " + Math.round(mbps * st.config.clip_seconds / 8) + " MB per clip";
+}
+function fill(sel, items) {
+  sel.innerHTML = "";
+  for (const v of items) sel.add(new Option(v, v));
+}
+
+function render() {
+  const c = st.config;
+  document.querySelectorAll("input[type=checkbox][data-key]").forEach((i) => i.checked = !!cfg(i.dataset.key));
+  document.querySelectorAll("select[data-key], input[type=number][data-key]").forEach((e) => {
+    if (document.activeElement !== e) e.value = cfg(e.dataset.key);
+  });
+  if (!picking) $("#hotkey").value = c.hotkey;
+  $("#hotkey-err").textContent = st.hotkey_error;
+  if (!tapping) $("#tap").value = c.double_tap ? keyNames[c.double_tap] || c.double_tap : "Off";
+  $("#tap-off").disabled = !c.double_tap;
+  size(c.bitrate_mbps);
+  $("#folder").textContent = st.folder;
+  $("#discord-hint").textContent = st.discord_available ? "" : "Not available in this build";
+  $("#empty-hint").textContent = "Press " + c.hotkey + (c.double_tap ? " or double-tap " + (keyNames[c.double_tap] || c.double_tap) : "") +
+    " in a game to save the last " + c.clip_seconds + " seconds.";
+
+  const s = st.status;
+  $("#status .dot").className = "dot" + (s.state === "recording" ? " rec" : s.state === "paused" ? " paused" : "");
+  $("#status span:last-child").textContent =
+    s.state === "recording" ? "Recording " + s.game : s.state === "paused" ? "Paused" : "Waiting for a game";
+  $("#save-now").disabled = s.state !== "recording";
+  $("#paused").checked = s.state === "paused";
+  $("#game-now").textContent = s.state === "recording" ? "Recording " + s.game : "No game is recording";
+  $("#never-now").disabled = s.state !== "recording";
+
+  const apps = [...new Set([...st.audio_apps, ...c.apps])].sort();
+  const box = $("#apps");
+  box.innerHTML = apps.length ? "" : '<div class="row"><div class="label hint">Apps playing sound, like Spotify or Discord, show up here.</div></div>';
+  for (const exe of apps) {
+    const r = document.createElement("div");
+    r.className = "row";
+    r.innerHTML = '<div class="label"><b></b><small></small></div><div class="ctl"><input type="checkbox" class="switch"></div>';
+    r.querySelector("b").textContent = exe.replace(/\.exe$/, "");
+    r.querySelector("small").textContent = st.audio_apps.includes(exe) ? "Playing sound now" : "Not running";
+    const cb = r.querySelector("input");
+    cb.checked = c.apps.includes(exe);
+    cb.onchange = () => set("apps", cb.checked ? [...c.apps, exe] : c.apps.filter((e) => e !== exe));
+    box.append(r);
+  }
+  fill($("#always"), c.always_record);
+  fill($("#never"), c.never_record);
+  const p = $("#preset");
+  p.innerHTML = "";
+  st.presets.forEach((name, i) => p.add(new Option(name, i)));
+  if (st.preset < 0) p.add(new Option("Custom", -1));
+  p.value = st.preset;
+}
+
+// Shortcut: Clip releases the current one while picking so pressing it reaches this page.
+let picking = false;
+function endPick(cancel) {
+  picking = false;
+  $("#hotkey-btn").textContent = "Change";
+  if (cancel) act("cancelHotkey");
+  if (st) render();
+}
+$("#hotkey-btn").onclick = () => {
+  if (picking) return endPick(true);
+  picking = true;
+  $("#hotkey").value = "Press keys…";
+  $("#hotkey-btn").textContent = "Cancel";
+  $("#hotkey-err").textContent = "";
+  act("pickHotkey");
+};
+const mods = { 16: 1, 17: 1, 18: 1, 91: 1, 92: 1 };
+window.addEventListener("keydown", (e) => {
+  if (!picking) return;
+  e.preventDefault();
+  if (e.keyCode === 27) return endPick(true);
+  const parts = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean);
+  if (!mods[e.keyCode]) parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
+  $("#hotkey").value = parts.join("+");
+  if (!mods[e.keyCode]) act("hotkeyKey", { vk: e.keyCode, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, win: e.metaKey });
+}, true);
+window.addEventListener("keyup", (e) => { if (picking) e.preventDefault(); }, true);
+
+let tapping = false;
+$("#tap-btn").onclick = () => {
+  tapping = !tapping;
+  $("#tap-btn").textContent = tapping ? "Cancel" : "Change";
+  if (tapping) { $("#tap").value = "Double-tap a key"; act("pickDoubleTap"); }
+  else { act("cancelDoubleTap"); render(); }
+};
+
+// ---- clips ----
+let clips = [], host = "", editing = null, info = null, exportBusy = false, game = "";
+let ws = null, regions = null, filmToken = 0;
+const player = $("#player");
+const FRAME = 1 / 60;
+const url = (p) => host + p.split("/").map(encodeURIComponent).join("/");
+const stem = (p) => p.split("/").pop().replace(/\.mp4$/i, "");
+// "robloxplayerbeta 2026-10-14 21-14-54" or "Roblox - Clipped with Clip - …" reads "Roblox · Oct 14, 9:14 PM";
+// names someone typed stay as they are.
+function title(c) {
+  const s = stem(c.path), m = s.match(/^(.*?)(?: - Clipped with Clip -)? (\d{4})-(\d\d)-(\d\d) (\d\d)-(\d\d)-(\d\d)(?: \(\d+\))?$/);
+  if (!m) return s;
+  const when = new Date(+m[2], m[3] - 1, +m[4], +m[5], +m[6], +m[7]);
+  const name = m[1].toLowerCase() === c.folder.toLowerCase() ? c.game : m[1];
+  return name + " · " + when.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+const mb = (n) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB";
+function clock(s) {
+  s = Math.max(0, s || 0);
+  const m = Math.floor(s / 60);
+  return m + ":" + (s - m * 60).toFixed(1).padStart(4, "0");
+}
+function ago(ms) {
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return "just now";
+  for (const [n, u] of [[86400 * 365, "year"], [86400 * 30, "month"], [86400 * 7, "week"], [86400, "day"], [3600, "hour"], [60, "minute"]])
+    if (s >= n) { const k = Math.floor(s / n); return k + " " + u + (k > 1 ? "s" : "") + " ago"; }
+}
+const lazy = new IntersectionObserver((entries) => {
+  for (const e of entries)
+    if (e.isIntersecting && !e.target.src) { e.target.src = e.target.dataset.src; lazy.unobserve(e.target); }
+});
+
+function showLibrary() {
+  const games = [...new Set(clips.map((c) => c.game))].sort();
+  if (game && !games.includes(game)) game = "";
+  const chips = $("#chips");
+  chips.innerHTML = "";
+  chips.hidden = games.length < 2;
+  for (const g of ["", ...games]) {
+    const b = document.createElement("button");
+    b.className = "chip" + (g === game ? " on" : "");
+    b.textContent = g || "All";
+    b.onclick = () => { game = g; showLibrary(); };
+    chips.append(b);
+  }
+  const q = $("#search").value.trim().toLowerCase(), sort = $("#sort").value;
+  const shown = clips.filter((c) => (!game || c.game === game) && (!q || c.path.toLowerCase().includes(q)))
+    .sort((a, b) => sort === "old" ? a.time - b.time : sort === "big" ? b.size - a.size : b.time - a.time);
+  $("#count").textContent = clips.length ? shown.length + (shown.length === 1 ? " clip" : " clips") : "";
+  $("#empty").hidden = clips.length > 0;
+  const grid = $("#grid");
+  grid.innerHTML = "";
+  for (const c of shown) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = '<div class="thumb"><video muted preload="metadata" playsinline></video><span class="dur" hidden></span></div>' +
+      '<div class="trow"><div class="title"></div><button class="qc" title="Copy to clipboard"><svg class="i"><use href="#i-copy"/></svg></button></div>' +
+      '<div class="meta"></div>';
+    const v = card.querySelector("video"), dur = card.querySelector(".dur");
+    v.dataset.src = url(c.path) + "#t=1";
+    v.onloadedmetadata = () => { dur.textContent = clock(v.duration).replace(/\.\d$/, ""); dur.hidden = false; };
+    card.onmouseenter = () => { if (v.src) { v.currentTime = 0; v.play().catch(() => {}); } };  // preview on hover
+    card.onmouseleave = () => { v.pause(); if (v.src) v.currentTime = 1; };
+    card.querySelector(".title").textContent = title(c);
+    card.querySelector(".title").title = stem(c.path);
+    card.querySelector(".meta").textContent = c.game + " · " + ago(c.time) + " · " + mb(c.size);
+    card.onclick = () => openClip(c);
+    card.querySelector(".qc").onclick = (e) => { e.stopPropagation(); quickCopy(c, e.currentTarget); };
+    grid.append(card);
+    lazy.observe(v);
+  }
+}
+// The copy button on a card: a share-ready copy (settings' size and badge) straight to the clipboard.
+let quickBtn = null;
+const qcIcon = (b, html) => { b.innerHTML = html; };
+function quickCopy(c, b) {
+  if (exportBusy) return;
+  exportBusy = true;
+  quickBtn = b;
+  b.className = "qc busy";
+  b.title = "Copying…";
+  qcIcon(b, '<span class="spin"></span>');
+  act("exportClip", { path: c.path, keep: [], copy: true, audio: 0, vertical: false, cropX: 0.5 });
+}
+function quickDone(m) {
+  const b = quickBtn;
+  quickBtn = null;
+  if (!b) return false;
+  const ok = !m.error && m.copied;
+  b.className = "qc " + (ok ? "done" : "fail");
+  b.title = ok ? (st && st.config.share_caption ? "Copied. Ctrl+V pastes it, with the caption in Discord" : "Copied")
+               : "Not copied: " + m.error;
+  qcIcon(b, '<svg class="i"><use href="#i-' + (ok ? "check" : "x") + '"/></svg>');
+  setTimeout(() => {
+    b.className = "qc";
+    b.title = "Copy to clipboard";
+    qcIcon(b, '<svg class="i"><use href="#i-copy"/></svg>');
+  }, 2200);
+  return true;
+}
+$("#search").oninput = showLibrary;
+$("#sort").onchange = showLibrary;
+$("#refresh").onclick = () => act("listClips");
+
+function openClip(c) {
+  editing = c;
+  info = null;
+  document.querySelectorAll(".grid video").forEach((v) => v.pause());
+  $("#library").hidden = true;
+  $("#editor").hidden = false;
+  $("#clip-name").value = title(c);
+  $("#ex-result").textContent = "";
+  $("#ex-show").hidden = true;
+  $("#ex-audio").innerHTML = '<option value="0">All audio</option>';
+  setShape("wide");
+  $("#kept").textContent = "";
+  destroyWave();
+  player.src = url(c.path);
+  act("clipInfo", { path: c.path });
+}
+function closeClip() {
+  editing = null;
+  filmToken++;
+  destroyWave();
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  $("#editor").hidden = true;
+  $("#library").hidden = false;
+}
+$("#back").onclick = closeClip;
+$("#clip-name").onkeydown = (e) => {
+  if (e.key === "Escape") { e.target.value = title(editing); e.target.blur(); }
+  if (e.key !== "Enter") return;
+  const name = e.target.value.trim();
+  if (name && name !== title(editing)) { act("renameClip", { path: editing.path, name }); closeClip(); }
+};
+$("#show-clip").onclick = () => act("showClip", { path: editing.path });
+$("#delete-clip").onclick = () => {
+  if (confirm('Move "' + title(editing) + '" to the Recycle Bin?')) { act("deleteClip", { path: editing.path }); closeClip(); }
+};
+
+// ---- the scrubber: wavesurfer.js waveform over a filmstrip; regions are the kept parts ----
+// Click or drag to seek, drag the red handles to trim, double-click to split, ✕ cuts a part, ↺ restores
+// a cut, scroll to zoom. Everything scales together because it all lives in wavesurfer's wrapper.
+function destroyWave() {
+  if (ws) ws.destroy();
+  ws = regions = null;
+}
+function parts() {
+  return regions ? regions.getRegions().map((r) => [r.start, r.end]).sort((a, b) => a[0] - b[0]) : [];
+}
+function cutButton(r) {
+  const b = document.createElement("button");
+  b.textContent = "✕";
+  b.title = "Cut this part";
+  b.style.cssText = "position:absolute;top:4px;right:10px;font:12px 'Segoe UI';padding:1px 6px;background:#000c;color:#fff;" +
+    "border:0;border-radius:5px;cursor:pointer;z-index:5";
+  b.onpointerdown = (e) => e.stopPropagation();
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (regions.getRegions().length > 1) { r.remove(); refresh(); }
+  };
+  return b;
+}
+function addPart(a, b) {
+  const r = regions.addRegion({ start: a, end: b, color: "rgba(255,255,255,0.04)", drag: false, resize: true, minLength: 0.2 });
+  r.setOptions({ content: cutButton(r) });
+  return r;
+}
+// Cut stretches go dark, each with a button that brings it back.
+function drawCuts() {
+  if (!ws) return;
+  const wrap = ws.getWrapper(), d = info.duration;
+  wrap.querySelectorAll(".cut").forEach((e) => e.remove());
+  const p = parts();
+  let at = 0;
+  for (const [a, b] of [...p, [d, d]]) {
+    if (a - at > 0.05) {
+      const g = document.createElement("div");
+      g.className = "cut";
+      g.style.cssText = `position:absolute;top:0;bottom:0;left:${100 * at / d}%;width:${100 * (a - at) / d}%;z-index:4;` +
+        "background:repeating-linear-gradient(135deg,#000d 0 6px,#000a 6px 12px);pointer-events:none;" +
+        "display:flex;align-items:center;justify-content:center";
+      const r = document.createElement("button");
+      r.textContent = "↺";
+      r.title = "Restore this part";
+      r.style.cssText = "pointer-events:auto;font:13px 'Segoe UI';padding:1px 7px;background:#000;color:#fff;border:0;border-radius:5px;cursor:pointer";
+      const [s, e] = [at, a];
+      r.onpointerdown = (ev) => ev.stopPropagation();
+      r.onclick = (ev) => { ev.stopPropagation(); addPart(s, e); merge(); };
+      g.append(r);
+      wrap.append(g);
+    }
+    at = Math.max(at, b);
+  }
+  const buttons = regions.getRegions().length > 1;
+  regions.getRegions().forEach((r) => { if (r.content) r.content.style.display = buttons ? "" : "none"; });
+}
+// Touching parts become one again.
+function merge() {
+  const p = parts(), joined = [];
+  for (const [a, b] of p) {
+    if (joined.length && a <= joined[joined.length - 1][1] + 0.01) joined[joined.length - 1][1] = Math.max(joined[joined.length - 1][1], b);
+    else joined.push([a, b]);
+  }
+  if (joined.length !== p.length) {
+    regions.clearRegions();
+    for (const [a, b] of joined) addPart(a, b);
+  }
+  refresh();
+}
+function refresh() {
+  drawCuts();
+  const p = parts(), total = p.reduce((s, [a, b]) => s + b - a, 0);
+  $("#kept").textContent = p.length > 1 || (info && total < info.duration - 0.05)
+    ? "Keeping " + clock(total) + " in " + p.length + (p.length === 1 ? " part" : " parts")
+    : "Drag the red edges to trim · double-click to split · scroll to zoom";
+}
+function splitAt(t) {
+  const r = regions && regions.getRegions().find((x) => t > x.start + 0.2 && t < x.end - 0.2);
+  if (!r) return;
+  const end = r.end;
+  r.setOptions({ end: t });
+  addPart(t, end);
+  refresh();
+}
+function onInfo(m) {
+  if (!editing || m.path !== editing.path) return;
+  info = m;
+  const a = $("#ex-audio");
+  a.innerHTML = "";
+  m.tracks.forEach((t, i) => a.add(new Option(i === 0 && t === "Mix" ? "All audio" : t + " only", i)));
+  a.add(new Option("No audio", -1));
+  destroyWave();
+  regions = WaveSurfer.Regions.create();
+  ws = WaveSurfer.create({
+    container: "#wave", media: player, peaks: [m.peaks.length ? m.peaks : [0, 0]], duration: m.duration,
+    height: 84, waveColor: "rgba(255,255,255,0.45)", progressColor: "rgba(255,255,255,0.8)", cursorColor: "#fff",
+    cursorWidth: 2, normalize: true, barWidth: 2, barGap: 1, barRadius: 1, dragToSeek: true, autoScroll: true,
+    autoCenter: true,
+    plugins: [
+      regions,
+      WaveSurfer.Timeline.create({ height: 14, style: { color: "#7d8394", fontSize: "10px" } }),
+      WaveSurfer.Hover.create({ lineColor: "#ffffff66", labelBackground: "#000", labelColor: "#fff", labelSize: "10px" }),
+      WaveSurfer.Zoom.create({ scale: 0.25, maxZoom: 300 }),
+    ],
+  });
+  ws.on("ready", () => {
+    regions.clearRegions();
+    addPart(0, m.duration);
+    filmstrip(url(editing.path));
+    refresh();
+  });
+  ws.on("dblclick", () => splitAt(player.currentTime));
+  regions.on("region-double-clicked", () => splitAt(player.currentTime));
+  regions.on("region-updated", merge);
+  if (m.error) $("#kept").textContent = "Couldn't read the clip: " + m.error;
+}
+
+// Thumbnails under the waveform, drawn from a second muted copy of the video.
+async function filmstrip(src) {
+  const token = ++filmToken, dpr = devicePixelRatio || 1;
+  const c = document.createElement("canvas");
+  c.style.cssText = "position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:.55";
+  ws.getWrapper().prepend(c);
+  c.width = Math.max(1, $("#wave").clientWidth * dpr);
+  c.height = 84 * dpr;
+  const ctx = c.getContext("2d");
+  const v = document.createElement("video");
+  v.crossOrigin = "anonymous";
+  v.muted = true;
+  v.preload = "auto";
+  v.src = src;
+  try {
+    await new Promise((ok, fail) => { v.onloadedmetadata = ok; v.onerror = fail; });
+    const th = c.height, tw = Math.max(1, Math.round(th * v.videoWidth / v.videoHeight)), n = Math.ceil(c.width / tw);
+    for (let i = 0; i < n && token === filmToken; i++) {
+      v.currentTime = Math.min(v.duration - 0.05, (i + 0.5) * v.duration / n);
+      await new Promise((ok) => { v.onseeked = ok; });
+      if (token === filmToken) ctx.drawImage(v, i * tw, 0, tw, th);
+    }
+  } catch (e) {}
+  v.removeAttribute("src");
+  v.load();
+}
+
+// ---- playback: click the video or press Space; cut parts are skipped and the kept ones loop ----
+const togglePlay = () => (player.paused ? player.play() : player.pause());
+$("#stage").onclick = (e) => { if (e.target !== $("#crop")) togglePlay(); };
+player.onplay = () => { $("#paused-mark").hidden = true; };
+player.onpause = () => { $("#paused-mark").hidden = false; };
+player.onended = () => { const p = parts(); player.currentTime = p.length ? p[0][0] : 0; player.play(); };
+player.onloadedmetadata = drawCrop;
+(function tick() {
+  if (editing) {
+    const p = parts(), t = player.currentTime;
+    if (!player.paused && p.length && !p.some(([a, b]) => t >= a && t < b)) {
+      const next = p.find(([a]) => a > t);
+      player.currentTime = next ? next[0] : p[0][0];
+    }
+    $("#time").textContent = clock(t) + " / " + clock(player.duration);
+  }
+  requestAnimationFrame(tick);
+})();
+function step(s) {
+  player.pause();
+  player.currentTime = Math.min(Math.max(player.currentTime + s, 0), player.duration || 0);
+}
+
+// ---- 16:9 or 9:16; the vertical crop box is dragged on the video ----
+let shape = "wide", cropX = 0.5;
+function setShape(v) {
+  shape = v;
+  document.querySelectorAll("#shape button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
+  drawCrop();
+}
+document.querySelectorAll("#shape button").forEach((b) => b.onclick = () => setShape(b.dataset.v));
+function videoBox() {
+  const ew = player.clientWidth, eh = player.clientHeight, vw = player.videoWidth || 16, vh = player.videoHeight || 9;
+  const s = Math.min(ew / vw, eh / vh), w = vw * s, h = vh * s;
+  return { x: (ew - w) / 2, y: (eh - h) / 2, w, h };
+}
+function drawCrop() {
+  const c = $("#crop");
+  c.style.display = shape === "tall" && editing ? "block" : "none";
+  if (shape !== "tall") return;
+  const b = videoBox(), cw = Math.min(b.w, b.h * 9 / 16);
+  c.style.top = b.y + "px";
+  c.style.height = b.h + "px";
+  c.style.width = cw + "px";
+  c.style.left = b.x + cropX * (b.w - cw) + "px";
+}
+window.addEventListener("resize", drawCrop);
+$("#crop").onclick = (e) => e.stopPropagation();
+$("#crop").onpointerdown = (e) => {
+  const c = $("#crop"), b = videoBox(), cw = c.offsetWidth, x0 = e.clientX, v0 = cropX;
+  c.setPointerCapture(e.pointerId);
+  c.onpointermove = (m) => {
+    cropX = Math.min(1, Math.max(0, v0 + (m.clientX - x0) / Math.max(1, b.w - cw)));
+    drawCrop();
+  };
+  c.onpointerup = () => { c.onpointermove = null; };
+};
+
+// ---- keys: Space play, S split, ← → frame (Shift: 1 s), Home / End ----
+document.addEventListener("keydown", (e) => {
+  if (!editing || picking || ["INPUT", "SELECT"].includes(e.target.tagName)) return;
+  const k = e.key;
+  if (k === " ") togglePlay();
+  else if (k === "s" || k === "S") splitAt(player.currentTime);
+  else if (k === "ArrowLeft") step(e.shiftKey ? -1 : -FRAME);
+  else if (k === "ArrowRight") step(e.shiftKey ? 1 : FRAME);
+  else if (k === "Home") player.currentTime = parts().length ? parts()[0][0] : 0;
+  else if (k === "End") player.currentTime = parts().length ? parts()[parts().length - 1][1] - 0.05 : player.duration;
+  else return;
+  e.preventDefault();
+});
+
+// ---- export ----
+function startExport(copy) {
+  if (!editing || exportBusy) return;
+  exportBusy = true;
+  $("#ex-progress").hidden = $("#ex-cancel").hidden = false;
+  $("#copy").hidden = $("#export").hidden = $("#ex-show").hidden = true;
+  $("#ex-progress").value = 0;
+  $("#ex-result").textContent = copy ? "Copying…" : "Exporting…";
+  let keep = parts();
+  const d = info ? info.duration : player.duration || 0;
+  if (keep.length === 1 && keep[0][0] <= 0.05 && keep[0][1] >= d - 0.05) keep = [];
+  act("exportClip", { path: editing.path, keep, preset: $("#ex-preset").value, copy,
+                      audio: Number($("#ex-audio").value), vertical: shape === "tall", cropX });
+}
+$("#export").onclick = () => startExport(false);
+$("#copy").onclick = () => startExport(true);
+$("#ex-cancel").onclick = () => act("cancelExport");
+$("#ex-show").onclick = () => act("showLast");
+
+window.chrome.webview.addEventListener("message", (e) => {
+  const m = e.data;
+  if (m.type === "clips") {
+    clips = m.items;
+    host = m.host;
+    if (editing && !clips.some((c) => c.path === editing.path)) closeClip();
+    showLibrary();
+  } else if (m.type === "clipInfo") {
+    onInfo(m);
+  } else if (m.type === "exportDone" && quickBtn) {
+    exportBusy = false;
+    quickDone(m);
+  } else if (m.type === "exportProgress") {
+    $("#ex-progress").value = m.p;
+  } else if (m.type === "exportDone") {
+    exportBusy = false;
+    $("#ex-progress").hidden = $("#ex-cancel").hidden = true;
+    $("#copy").hidden = $("#export").hidden = false;
+    if (m.error) $("#ex-result").textContent = m.error === "cancelled" ? "Cancelled" : "Not exported: " + m.error;
+    else if (m.copied) $("#ex-result").textContent = st && st.config.share_caption
+      ? "Copied. Ctrl+V pastes it, with the caption in Discord" : "Copied, paste with Ctrl+V";
+    else { $("#ex-result").textContent = "Saved to Exports"; $("#ex-show").hidden = false; }
+  }
+  if (m.type === "state") { st = m; render(); }
+  else if (m.type === "saved") { say("Saved " + m.file); $("#show-last").hidden = false; }
+  else if (m.type === "saveFailed") { say("Not saved: " + m.error, true); }
+  else if (m.type === "hotkeyResult") {
+    if (!m.error) endPick(false);
+    else $("#hotkey-err").textContent = m.error;
+  } else if (m.type === "tapPicked") {
+    tapping = false;
+    $("#tap-btn").textContent = "Change";
+    render();
+  }
+});
+send({ type: "ready" });
+act("listClips");
+</script>
+</body>
+</html>
