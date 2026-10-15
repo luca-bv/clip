@@ -42,4 +42,4 @@ ps "\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('$(cygpath -w "$s
 ps "Start-Process -FilePath '$(cygpath -w "$app/Clip.exe")'"
 
 echo "Clip is installed in $(cygpath -w "$app") and running in the tray."
-echo "It's in the Start menu and starts with Windows. Press Alt+F9 in a game to save a clip."
+echo "It's in the Start menu and starts with Windows. Press F8 in a game to save a clip."

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16181f"/>
+      <stop offset="1" stop-color="#0c0d11"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.2" cy="0.5" r="0.6">
+      <stop offset="0" stop-color="#e83030" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#e83030" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="400" rx="24" fill="url(#grid)"/>
+  <rect width="1280" height="400" rx="24" fill="url(#glow)"/>
+
+  <!-- app icon -->
+  <rect x="120" y="120" width="160" height="160" rx="36" fill="#1c1c22" stroke="#ffffff" stroke-opacity="0.08"/>
+  <circle cx="200" cy="200" r="40" fill="#e83030"/>
+  <circle cx="200" cy="200" r="58" fill="none" stroke="#e83030" stroke-opacity="0.35" stroke-width="4"/>
+
+  <text x="330" y="196" fill="#f1f2f6" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="92" font-weight="700" letter-spacing="-2">Clip</text>
+  <text x="334" y="250" fill="#a3a9b8" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="30">Your best plays, saved. Your frames, untouched.</text>
+
+  <!-- a timeline strip -->
+  <g transform="translate(334 286)">
+    <rect width="600" height="34" rx="8" fill="#0b0c10" stroke="#ffffff" stroke-opacity="0.08"/>
+    <g fill="#ffffff" fill-opacity="0.35">
+      <rect x="14" y="13" width="3" height="8" rx="1.5"/><rect x="22" y="9" width="3" height="16" rx="1.5"/>
+      <rect x="30" y="12" width="3" height="10" rx="1.5"/><rect x="38" y="6" width="3" height="22" rx="1.5"/>
+      <rect x="46" y="11" width="3" height="12" rx="1.5"/><rect x="54" y="8" width="3" height="18" rx="1.5"/>
+      <rect x="62" y="13" width="3" height="8" rx="1.5"/><rect x="70" y="10" width="3" height="14" rx="1.5"/>
+      <rect x="78" y="5" width="3" height="24" rx="1.5"/><rect x="86" y="12" width="3" height="10" rx="1.5"/>
+      <rect x="94" y="9" width="3" height="16" rx="1.5"/><rect x="102" y="13" width="3" height="8" rx="1.5"/>
+      <rect x="390" y="10" width="3" height="14" rx="1.5"/><rect x="398" y="6" width="3" height="22" rx="1.5"/>
+      <rect x="406" y="12" width="3" height="10" rx="1.5"/><rect x="414" y="8" width="3" height="18" rx="1.5"/>
+      <rect x="422" y="13" width="3" height="8" rx="1.5"/><rect x="430" y="9" width="3" height="16" rx="1.5"/>
+      <rect x="438" y="5" width="3" height="24" rx="1.5"/><rect x="446" y="11" width="3" height="12" rx="1.5"/>
+      <rect x="454" y="13" width="3" height="8" rx="1.5"/><rect x="462" y="8" width="3" height="18" rx="1.5"/>
+      <rect x="470" y="12" width="3" height="10" rx="1.5"/><rect x="478" y="10" width="3" height="14" rx="1.5"/>
+      <rect x="486" y="6" width="3" height="22" rx="1.5"/><rect x="494" y="13" width="3" height="8" rx="1.5"/>
+      <rect x="502" y="9" width="3" height="16" rx="1.5"/><rect x="510" y="12" width="3" height="10" rx="1.5"/>
+      <rect x="518" y="7" width="3" height="20" rx="1.5"/><rect x="526" y="11" width="3" height="12" rx="1.5"/>
+      <rect x="534" y="13" width="3" height="8" rx="1.5"/><rect x="542" y="9" width="3" height="16" rx="1.5"/>
+      <rect x="550" y="12" width="3" height="10" rx="1.5"/><rect x="558" y="6" width="3" height="22" rx="1.5"/>
+      <rect x="566" y="10" width="3" height="14" rx="1.5"/><rect x="574" y="13" width="3" height="8" rx="1.5"/>
+      <rect x="582" y="9" width="3" height="16" rx="1.5"/>
+    </g>
+    <!-- the kept part -->
+    <rect x="120" y="0" width="250" height="34" fill="#e83030" fill-opacity="0.12"/>
+    <g fill="#ffffff" fill-opacity="0.85">
+      <rect x="130" y="9" width="3" height="16" rx="1.5"/><rect x="138" y="4" width="3" height="26" rx="1.5"/>
+      <rect x="146" y="11" width="3" height="12" rx="1.5"/><rect x="154" y="6" width="3" height="22" rx="1.5"/>
+      <rect x="162" y="3" width="3" height="28" rx="1.5"/><rect x="170" y="8" width="3" height="18" rx="1.5"/>
+      <rect x="178" y="12" width="3" height="10" rx="1.5"/><rect x="186" y="5" width="3" height="24" rx="1.5"/>
+      <rect x="194" y="9" width="3" height="16" rx="1.5"/><rect x="202" y="2" width="3" height="30" rx="1.5"/>
+      <rect x="210" y="7" width="3" height="20" rx="1.5"/><rect x="218" y="11" width="3" height="12" rx="1.5"/>
+      <rect x="226" y="4" width="3" height="26" rx="1.5"/><rect x="234" y="9" width="3" height="16" rx="1.5"/>
+      <rect x="242" y="6" width="3" height="22" rx="1.5"/><rect x="250" y="12" width="3" height="10" rx="1.5"/>
+      <rect x="258" y="3" width="3" height="28" rx="1.5"/><rect x="266" y="8" width="3" height="18" rx="1.5"/>
+      <rect x="274" y="10" width="3" height="14" rx="1.5"/><rect x="282" y="5" width="3" height="24" rx="1.5"/>
+      <rect x="290" y="9" width="3" height="16" rx="1.5"/><rect x="298" y="12" width="3" height="10" rx="1.5"/>
+      <rect x="306" y="6" width="3" height="22" rx="1.5"/><rect x="314" y="10" width="3" height="14" rx="1.5"/>
+      <rect x="322" y="4" width="3" height="26" rx="1.5"/><rect x="330" y="9" width="3" height="16" rx="1.5"/>
+      <rect x="338" y="12" width="3" height="10" rx="1.5"/><rect x="346" y="7" width="3" height="20" rx="1.5"/>
+      <rect x="354" y="10" width="3" height="14" rx="1.5"/><rect x="362" y="13" width="3" height="8" rx="1.5"/>
+    </g>
+    <rect x="117" y="0" width="5" height="34" rx="2" fill="#e83030"/>
+    <rect x="368" y="0" width="5" height="34" rx="2" fill="#e83030"/>
+    <rect x="232" y="-6" width="2" height="46" fill="#ffffff"/>
+  </g>
+
+  <!-- the hotkey -->
+  <g transform="translate(1000 150)">
+    <rect width="140" height="100" rx="18" fill="#1d2029" stroke="#ffffff" stroke-opacity="0.12"/>
+    <rect y="88" width="140" height="12" rx="6" fill="#000000" fill-opacity="0.35"/>
+    <text x="70" y="64" text-anchor="middle" fill="#f1f2f6" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="40" font-weight="600">F8</text>
+    <text x="70" y="140" text-anchor="middle" fill="#7d8394" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="18">saves the last 30 s</text>
+  </g>
+</svg>
