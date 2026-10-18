@@ -81,13 +81,18 @@ AVCodecContext* OpenH264(AVBufferRef* frames, int w, int h, AVRational fps, int6
     e->color_primaries = AVCOL_PRI_BT709;
     e->color_trc = AVCOL_TRC_BT709;
     AVDictionary* o = nullptr;
+    // Frames sent as AV_PICTURE_TYPE_I become IDR, which a clip can start on; else only an I-frame.
     if (n == "h264_nvenc") {
       av_dict_set(&o, "preset", "p4", 0);
       av_dict_set(&o, "tune", "hq", 0);
       av_dict_set(&o, "rc", "cbr", 0);
+      av_dict_set(&o, "forced-idr", "1", 0);
     } else if (n == "h264_amf") {
       av_dict_set(&o, "rc", "cbr", 0);
       av_dict_set(&o, "quality", "balanced", 0);
+      av_dict_set(&o, "forced_idr", "1", 0);
+    } else {
+      av_dict_set(&o, "forced_idr", "1", 0);
     }
     const int r = avcodec_open2(e, codec, &o);
     av_dict_free(&o);
