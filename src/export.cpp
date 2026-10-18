@@ -115,7 +115,10 @@ std::string Run(const ExportOptions& o, const std::function<void(double)>& progr
   }
   out_h &= ~1;
   const int out_w = int(int64_t(src.right - src.left) * out_h / src_h) & ~1;
-  const AVRational fps = vs->avg_frame_rate.num ? vs->avg_frame_rate : AVRational{60, 1};
+  // The recorded rate (60), not the average: a clip that dropped frames averages less, and encoding
+  // at that rate merges its runs of real frames, so the copy would play at a fraction of the fps.
+  AVRational fps = av_guess_frame_rate(j.in, vs, nullptr);
+  if (fps.num <= 0 || fps.den <= 0) fps = vs->avg_frame_rate.num ? vs->avg_frame_rate : AVRational{60, 1};
   j.frames = EncoderSurfaces(j.hw_dev, out_w, out_h, 16);
   std::string enc_name;
   j.enc = OpenH264(j.frames, out_w, out_h, fps, bitrate, int(std::lround(av_q2d(fps) * 2)), enc_name);

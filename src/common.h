@@ -100,7 +100,9 @@ struct Config {
   int fps = 60;
   int max_height = 1080;
   int bitrate_mbps = 20;
-  int gpu_priority = -7;  // -7..0; lowest lets the game's GPU work always run before ours
+  // -7..0. Normal, not lowest: a game that keeps the GPU busy (uncapped fps) starves a lowest-priority
+  // device, and the recording drops to a few fps. Our work is one small blit per frame either way.
+  int gpu_priority = 0;
   std::string clips_folder;  // empty = <Videos>\Clip
   int min_free_gb = 2;
   bool record_game_audio = true;
