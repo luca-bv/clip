@@ -40,24 +40,30 @@ void PacketRing::Drain(int track, AVCodecContext* enc) {
 
 void PacketRing::Evict(int64_t now_us) {
   const int64_t cutoff = now_us - keep_us_;
+  // Audio is kept back to the oldest video keyframe: when the encoder skips ticks a GOP spans more
+  // time, a clip starts further back, and audio cut at `cutoff` would leave its first seconds silent.
+  int64_t audio_cutoff = cutoff;
   for (auto& t : tracks_) {
+    if (!t->video) continue;
     auto& q = t->pkts;
-    if (t->video) {
-      // Drop whole GOPs while the next GOP still starts before the cutoff, so a keyframe always leads.
-      for (;;) {
-        size_t k = 1;
-        while (k < q.size() && !(q[k]->flags & AV_PKT_FLAG_KEY)) k++;
-        if (k >= q.size() || Us(*t, q[k]->pts) > cutoff) break;
-        for (; k; k--) {
-          av_packet_free(&q.front());
-          q.pop_front();
-        }
-      }
-    } else {
-      while (!q.empty() && Us(*t, q.front()->pts) < cutoff) {
+    // Drop whole GOPs while the next GOP still starts before the cutoff, so a keyframe always leads.
+    for (;;) {
+      size_t k = 1;
+      while (k < q.size() && !(q[k]->flags & AV_PKT_FLAG_KEY)) k++;
+      if (k >= q.size() || Us(*t, q[k]->pts) > cutoff) break;
+      for (; k; k--) {
         av_packet_free(&q.front());
         q.pop_front();
       }
+    }
+    if (!q.empty()) audio_cutoff = std::min(audio_cutoff, Us(*t, q.front()->pts));
+  }
+  for (auto& t : tracks_) {
+    if (t->video) continue;
+    auto& q = t->pkts;
+    while (!q.empty() && Us(*t, q.front()->pts) < audio_cutoff) {
+      av_packet_free(&q.front());
+      q.pop_front();
     }
   }
 }

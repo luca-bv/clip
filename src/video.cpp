@@ -219,12 +219,19 @@ bool VideoCapture::Encode(int64_t pts) {
   if (repeat) repeats_++;
   last_frame_time_ = frame_time;
 
+  // A keyframe at least once a second of the timeline. The encoder counts frames, and skipped ticks
+  // would stretch its GOP over seconds: clips would start well before the length asked for.
+  auto set_pts = [&](AVFrame* f) {
+    f->pts = pts;
+    f->pict_type = pts >= next_key_ ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    if (f->pict_type == AV_PICTURE_TYPE_I) next_key_ = pts + fps_;
+  };
   AVFrame* out = av_frame_alloc();
   try {
     // Same picture: hand the encoder the surface we already converted, no GPU work for this tick.
     if (repeat && !overlay && last_ && last_->buf[0]) {
       CheckAv(av_frame_ref(out, last_), "reuse frame");
-      out->pts = pts;
+      set_pts(out);
       CheckAv(avcodec_send_frame(enc_, out), "encode");
       av_frame_free(&out);
       ring_.Drain(track_, enc_);
@@ -260,7 +267,7 @@ bool VideoCapture::Encode(int64_t pts) {
     stream.pInputSurface = in;
     winrt::check_hresult(vctx_->VideoProcessorBlt(vp_.get(), out_view, 0, 1, &stream));
 
-    out->pts = pts;
+    set_pts(out);
     out->duration = 1;
     if (reuse_) {
       if (!last_) last_ = av_frame_alloc();

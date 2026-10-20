@@ -89,6 +89,7 @@ class VideoCapture {
   bool reuse_ = false;
 
   int64_t last_frame_time_ = -1, repeats_ = 0;  // video thread only
+  int64_t next_key_ = 0;  // pts from which the next frame is forced to a keyframe; video thread only
   std::atomic<bool> stop_{false}, failed_{false};
   std::thread thread_;
 };

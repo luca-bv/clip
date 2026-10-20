@@ -154,6 +154,27 @@ int main() {
   avcodec_free_context(&video);
   avcodec_free_context(&mix);
   avcodec_free_context(&mic);
+
+  {  // a struggling recording encodes every 4th tick: GOPs span 4 s, and audio must reach back as far
+    PacketRing slow;
+    slow.SetKeepSeconds(5);  // keeps 7 s, but the oldest kept keyframe is further back
+    AVCodecContext* v = OpenVideo();
+    AVCodecContext* a = OpenAudio();
+    const int st = slow.AddTrack("Video", v, true), at = slow.AddTrack("Mix", a, false);
+    int64_t ka = 0;
+    for (int64_t n = 0; n < 20 * kFps; n += 4) {
+      SendVideo(slow, st, v, n);
+      for (; ka * kFrame * kFps <= n * kRate; ka++) SendAudio(slow, at, a, ka);
+    }
+    const auto path = (dir / "d.mp4").string();
+    assert(slow.Export(20'000'000, 5, path).empty());
+    const Probe p = ProbeFile(path);
+    std::printf("sparse video, 5 s clip: %.3f s, video %.3f+%.3f, audio %.3f+%.3f\n", p.duration, p.video_start,
+                p.video_len, p.audio_start, p.audio_len);
+    assert(std::abs(p.video_start - p.audio_start) < 0.05);
+    avcodec_free_context(&v);
+    avcodec_free_context(&a);
+  }
   std::filesystem::remove_all(dir);
   std::puts("ring ok");
 }
