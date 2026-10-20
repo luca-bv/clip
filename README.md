@@ -26,7 +26,7 @@
 
 ### Every play, one place
 
-Recording starts by itself when a game goes fullscreen. Press <kbd>F8</kbd>, double-tap <kbd>Right Ctrl</kbd> or say *"Hey Clip, save that"*: a chime plays at once and the last 15 seconds to 5 minutes are saved.
+Recording starts by itself when a game goes fullscreen. Press <kbd>F8</kbd>, double-tap <kbd>Right Ctrl</kbd> or say *"Hey Clip, save that"*: a chime plays and a small red card slides in over the game at once, and the last 15 seconds to 5 minutes are saved.
 
 Clips sort themselves by game, with the game's real name, and open instantly from cached previews.
 

@@ -109,6 +109,7 @@ struct Config {
   std::vector<std::string> always_record, never_record;
   bool start_with_windows = true;
   bool copy_to_clipboard = true;     // each saved clip, as a file Ctrl+V pastes into Discord or Explorer
+  bool save_notice = true;           // a "Clip saved" card over the game when a clip is saved
   std::string share_size = "discord";  // clipboard copies: "discord" (fits 10 MB) or "original"
   bool watermark = true;             // "Clipped with Clip" badge on exports and clipboard copies; recordings stay clean
   bool discord_presence = true;      // Discord activity: the game, "Clipping with Clip" and a link to the repo

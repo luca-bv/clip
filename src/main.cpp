@@ -4,6 +4,7 @@
 #include "preview.h"
 #include "session.h"
 #include "settings.h"
+#include "toast.h"
 #include "voice.h"
 
 #include <audiopolicy.h>
@@ -30,9 +31,9 @@ namespace json = winrt::Windows::Data::Json;
 
 namespace {
 enum : UINT {
-  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL, WM_PREVIEW_READY
+  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL, WM_PREVIEW_READY, WM_PASTE_KEY
 };
-// Discord application whose name Discord shows as "Playing â€¦". Empty turns the Discord activity off.
+// Discord application whose name Discord shows as "Playing …". Empty turns the Discord activity off.
 constexpr char kDiscordAppId[] = "1560105311728308347";
 enum : UINT {
   ID_SAVE = 1, ID_PAUSE, ID_OPEN_FOLDER, ID_OPEN_CONFIG, ID_QUIT, ID_NEVER, ID_ALWAYS, ID_GAME_AUDIO, ID_MIC,
@@ -94,6 +95,9 @@ struct {
   ULONGLONG paste_since = 0;
   bool caption_into_discord = false;  // the clip went into Discord: paste the caption there too
   int caption_waits = 0;
+  int paste_watch = 0;              // raw input listener for Ctrl+V while a captioned clip waits on the clipboard
+  ULONGLONG paste_rendered = 0;     // when something last took the clip from the clipboard
+  ULONGLONG paste_pressed = 0;      // when the Ctrl+V that pasted it went down
   std::thread export_thread;  // one export at a time
   bool exporting = false;
   std::atomic<bool> export_cancel{false};
@@ -234,17 +238,6 @@ const std::vector<char>& Chime(bool ok) {
 
 void PlayChime(bool ok) { PlaySoundW(LPCWSTR(Chime(ok).data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT); }
 
-// "Clip saved" notification; clicking it shows the file in Explorer.
-void SavedNotice(const std::wstring& what, const std::wstring& next) {
-  g.nid.uFlags = NIF_INFO;
-  g.nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
-  wcsncpy_s(g.nid.szInfoTitle, L"Clip saved", _TRUNCATE);
-  const std::wstring text = what + L"\n" + next;
-  wcsncpy_s(g.nid.szInfo, text.c_str(), _TRUNCATE);
-  Shell_NotifyIconW(NIM_MODIFY, &g.nid);
-  g.balloon_shows_clip = true;
-}
-
 void ShowLastClip() {
   if (!g.last_clip.empty())
     ShellExecuteW(nullptr, nullptr, L"explorer.exe", (L"/select,\"" + g.last_clip.wstring() + L"\"").c_str(), nullptr,
@@ -281,6 +274,7 @@ Config ParseConfig(const std::string& text) {
   c.never_record = list("never_record");
   c.start_with_windows = t["start_with_windows"].value_or(c.start_with_windows);
   c.copy_to_clipboard = t["copy_to_clipboard"].value_or(c.copy_to_clipboard);
+  c.save_notice = t["save_notice"].value_or(c.save_notice);
   c.watermark = t["watermark"].value_or(c.watermark);
   c.share_size = Lower(t["share_size"].value_or(c.share_size));
   if (c.share_size != "original") c.share_size = "discord";
@@ -339,6 +333,7 @@ toml::table ConfigTable(const Config& c) {
       {"record_mic", c.record_mic},       {"apps", arr(c.apps)},
       {"always_record", arr(c.always_record)}, {"never_record", arr(c.never_record)},
       {"start_with_windows", c.start_with_windows}, {"copy_to_clipboard", c.copy_to_clipboard},
+      {"save_notice", c.save_notice},
       {"watermark", c.watermark},         {"double_tap", c.double_tap},
       {"share_size", c.share_size},       {"discord_presence", c.discord_presence},
       {"share_caption", c.share_caption}, {"voice_save", c.voice_save},
@@ -561,13 +556,13 @@ void PickerSay(const std::wstring& text) {
   InvalidateRect(g.picker, nullptr, TRUE);
 }
 
-// Sets the shortcut if it can be one and is free. Returns "" or why not; "â€¦" means wait for more keys.
+// Sets the shortcut if it can be one and is free. Returns "" or why not; "…" means wait for more keys.
 std::wstring TryShortcut(UINT vk, bool ctrl, bool alt, bool shift, bool win) {
   const std::string key = KeyName(vk);
   if (key.empty()) {
     if (vk != VK_CONTROL && vk != VK_MENU && vk != VK_SHIFT && vk != VK_LWIN && vk != VK_RWIN)
       return L"That key can't be a shortcut. Use an F-key, or a letter or number with Ctrl or Alt.";
-    return L"â€¦";  // a modifier on its own: wait for the rest
+    return L"…";  // a modifier on its own: wait for the rest
   }
   if (key.size() == 1 && !ctrl && !alt && !win)
     return L"Add Ctrl or Alt to a letter or number, so typing it doesn't save a clip.";
@@ -591,7 +586,7 @@ void OnPickerKey(UINT vk) {
   HWND picker = g.picker;
   const std::wstring err = TryShortcut(vk, ctrl, alt, shift, win);
   if (err.empty()) DestroyWindow(picker);
-  else if (err != L"â€¦") PickerSay(err);
+  else if (err != L"…") PickerSay(err);
 }
 
 LRESULT CALLBACK PickerProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
@@ -803,7 +798,9 @@ void SaveClip(double end_ago = 0) {
   if (GetDiskFreeSpaceExW(folder.c_str(), &free, nullptr, nullptr) &&
       free.QuadPart < uint64_t(g.cfg.min_free_gb) << 30) {
     PlayChime(false);
-    return Balloon(L"Clip not saved", std::format(L"Less than {} GB free on the clips drive.", g.cfg.min_free_gb));
+    const std::wstring why = std::format(L"Less than {} GB free on the clips drive.", g.cfg.min_free_gb);
+    if (g.cfg.save_notice) return ShowToast(g.session->hwnd, L"Clip not saved", why, false);
+    return Balloon(L"Clip not saved", why);
   }
   SYSTEMTIME t;
   GetLocalTime(&t);
@@ -816,8 +813,17 @@ void SaveClip(double end_ago = 0) {
   // Feedback the moment the key is pressed; writing the file and the clipboard copy finish in the background.
   PlayChime(true);
   g.last_clip = file;
-  SavedNotice(title + std::format(L" Â· last {} s", g.cfg.clip_seconds),
-              g.cfg.copy_to_clipboard ? L"On your clipboard in a moment. Click to show in folder." : L"Click to show in folder.");
+  if (g.cfg.save_notice)  // with a copy coming, the card stays up until it's on the clipboard
+    ShowToast(g.session->hwnd, L"Clip saved",
+              g.cfg.copy_to_clipboard ? L"Copying to clipboard…" : title + std::format(L" · last {} s", g.cfg.clip_seconds),
+              true, g.cfg.copy_to_clipboard);
+}
+
+// The saved-clip card's second line once the clipboard copy of a hotkey save is done (or isn't).
+void CopyNotice(const std::string& err) {
+  if (g.cfg.save_notice)
+    ShowToast(g.session ? g.session->hwnd : nullptr, L"Clip saved",
+              err.empty() ? L"Copied to clipboard" : L"Not copied: " + Wide(err));
 }
 
 HGLOBAL GlobalText(const std::wstring& s) {
@@ -844,13 +850,29 @@ HGLOBAL DropFiles(const fs::path& file) {
 
 // The clip as a file, the way Explorer copies one. Discord takes only the file when there's also text, so the
 // file is handed over when something pastes it (delayed rendering), and then the caption replaces it:
-// Ctrl+V attaches the clip, the next Ctrl+V types "#ClippedWithClip on â€¦".
+// Ctrl+V attaches the clip, the next Ctrl+V types "#ClippedWithClip on …".
+// Ctrl+V anywhere while a captioned clip waits on the clipboard (raw input sees it even with Discord in front).
+void WatchPaste(bool on) {
+  if (!on) {
+    if (g.paste_watch) raw_input::Unlisten(std::exchange(g.paste_watch, 0));
+    return;
+  }
+  if (g.paste_watch) return;
+  g.paste_watch = raw_input::Listen([](const RAWINPUT& ri) {
+    if (ri.header.dwType != RIM_TYPEKEYBOARD) return;
+    const RAWKEYBOARD& k = ri.data.keyboard;
+    if (k.VKey == 'V' && !(k.Flags & RI_KEY_BREAK) && k.Message != WM_KEYUP && GetAsyncKeyState(VK_CONTROL) < 0)
+      PostMessageW(g.wnd, WM_PASTE_KEY, 0, 0);
+  });
+}
+
 void CopyFileToClipboard(const fs::path& file, const std::wstring& caption) {
   if (!OpenClipboard(g.wnd)) return Log("can't copy clip to clipboard");
-  EmptyClipboard();
+  EmptyClipboard();  // our own WM_DESTROYCLIPBOARD clears the last clip first
   g.paste_file = file;
   g.paste_caption = caption;
   g.paste_since = GetTickCount64();
+  g.paste_rendered = g.paste_pressed = 0;
   SetClipboardData(CF_HDROP, nullptr);  // rendered in WM_RENDERFORMAT
   if (HGLOBAL effect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD))) {
     *static_cast<DWORD*>(GlobalLock(effect)) = DROPEFFECT_COPY;
@@ -858,6 +880,7 @@ void CopyFileToClipboard(const fs::path& file, const std::wstring& caption) {
     if (!SetClipboardData(RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT), effect)) GlobalFree(effect);
   }
   CloseClipboard();
+  WatchPaste(!caption.empty());
 }
 
 bool DiscordInFront() {
@@ -866,20 +889,45 @@ bool DiscordInFront() {
   return pid && ExeName(pid).starts_with("discord");  // discord, discordptb, discordcanary
 }
 
-// Something asked for the clip: hand it over, then put the caption up. Requests in the first moment after copying
-// come from clipboard watchers, not a paste, so they don't trigger it.
+// Something asked for the clip: hand it over. Clipboard history and apps peeking at the clipboard ask too, so
+// the caption waits for an actual Ctrl+V (OnPasteKey).
 void RenderClipboardFile() {
   if (g.paste_file.empty()) return;
   if (HGLOBAL h = DropFiles(g.paste_file); h && !SetClipboardData(CF_HDROP, h)) GlobalFree(h);
-  if (g.paste_caption.empty() || GetTickCount64() - g.paste_since <= 700) return;
+  g.paste_rendered = GetTickCount64();
+}
+
+// Ctrl+V with the clip on the clipboard. In Discord it pastes the clip, and the caption follows right after.
+// Elsewhere the caption takes the clip's place only if that app took the file (it rendered just now).
+void OnPasteKey() {
+  if (g.paste_file.empty() || g.paste_caption.empty() || g.paste_pressed || GetClipboardOwner() != g.wnd) return;
+  const ULONGLONG now = GetTickCount64();
   g.caption_into_discord = DiscordInFront();
+  if (!g.caption_into_discord) {
+    // the paste reads the clipboard a moment after the key goes down
+    SetTimer(g.wnd, kCaptionTimer, 400, nullptr);
+    g.paste_pressed = now;
+    g.caption_waits = -1;  // first tick checks the app really took the file
+    return;
+  }
+  g.paste_pressed = now;
   g.caption_waits = 0;
-  SetTimer(g.wnd, kCaptionTimer, 250, nullptr);
+  Log("clipboard: clip pasted into Discord, caption follows");
+  SetTimer(g.wnd, kCaptionTimer, 150, nullptr);
 }
 
 // Discord keeps only the file when a paste carries both, so when the clip was pasted into Discord the caption is
 // pasted right after it (one Ctrl+V gives both); anywhere else it waits on the clipboard for the next Ctrl+V.
 void PutCaptionOnClipboard() {
+  if (g.caption_waits < 0) {  // a Ctrl+V outside Discord: only if it took the file
+    if (g.paste_rendered < g.paste_pressed) {
+      KillTimer(g.wnd, kCaptionTimer);
+      g.paste_pressed = 0;  // that Ctrl+V pasted something else; wait for the next one
+      return;
+    }
+    g.caption_waits = 0;
+  }
+  if (GetTickCount64() - g.paste_pressed < 350) return;  // let the app finish reading the clip
   if ((GetAsyncKeyState(VK_CONTROL) < 0 || GetAsyncKeyState('V') < 0) && ++g.caption_waits < 30) return;  // still held
   KillTimer(g.wnd, kCaptionTimer);
   const std::wstring caption = g.paste_caption;  // EmptyClipboard sends us WM_DESTROYCLIPBOARD, which clears it
@@ -887,6 +935,7 @@ void PutCaptionOnClipboard() {
   EmptyClipboard();
   if (HGLOBAL t = GlobalText(caption); t && !SetClipboardData(CF_UNICODETEXT, t)) GlobalFree(t);
   CloseClipboard();
+  Log("clipboard: caption on the clipboard{}", g.caption_into_discord ? ", pasting it into Discord" : "");
   if (!g.caption_into_discord || !DiscordInFront()) return;
   INPUT in[4]{};
   for (auto& i : in) i.type = INPUT_KEYBOARD;
@@ -1084,6 +1133,7 @@ void ExportDoneToPage(const std::string& page_path, const std::string& err, bool
 
 void StartExport(ExportJob job) {
   if (g.exporting) {
+    if (job.copy && job.page_path.empty()) CopyNotice("another copy is still being made");
     return ExportDoneToPage(job.page_path, "Another export is still running.", false, "");
   }
   if (g.export_thread.joinable()) g.export_thread.join();
@@ -1102,6 +1152,7 @@ void OnExportDone(std::unique_ptr<ExportJob> job) {
   if (g.export_thread.joinable()) g.export_thread.join();
   const bool ok = job->err.empty();
   if (ok && job->copy) CopyFileToClipboard(job->o.out, job->caption);
+  if (job->copy && job->page_path.empty()) CopyNotice(job->err);  // a hotkey save's copy
   if (ok && !job->page_path.empty()) PlayChime(true);  // a hotkey save already chimed when it was pressed
   ExportDoneToPage(job->page_path, job->err, ok && job->copy, ok ? Utf8(job->o.out.wstring()) : "");
   if (ok && !job->copy) {
@@ -1115,7 +1166,7 @@ std::wstring Caption(const SYSTEMTIME& t) {
                      (t.wHour + 11) % 12 + 1, t.wMinute, t.wHour < 12 ? L"AM" : L"PM");
 }
 
-// When a clip was recorded: the time in its name ("â€¦ 2026-10-14 21-19-03"), else when the file was created.
+// When a clip was recorded: the time in its name ("… 2026-10-14 21-19-03"), else when the file was created.
 SYSTEMTIME RecordedAt(const fs::path& clip) {
   SYSTEMTIME t{};
   const std::wstring stem = clip.stem().wstring();
@@ -1139,6 +1190,7 @@ void CopyClip(const fs::path& clip, ExportOptions edit, std::string page_path = 
   const std::wstring caption = g.cfg.share_caption ? Caption(t) : L"";
   if (!edit.watermark && g.cfg.share_size == "original" && edit.keep.empty() && edit.audio == 0 && edit.gains.empty() && !edit.vertical) {
     CopyFileToClipboard(clip, caption);
+    if (page_path.empty()) CopyNotice("");
     return ExportDoneToPage(page_path, "", true, Utf8(clip.wstring()));
   }
   std::error_code ec;
@@ -1337,7 +1389,7 @@ void ShowMenu() {
   std::wstring status = g.paused ? L"Paused" : g.session ? L"Recording " + g.session_title : L"Waiting for a game";
   AppendMenuW(m, MF_STRING | MF_GRAYED, 0, status.c_str());
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING, ID_SETTINGS, L"Settingsâ€¦");
+  AppendMenuW(m, MF_STRING, ID_SETTINGS, L"Settings…");
   SetMenuDefaultItem(m, ID_SETTINGS, FALSE);
   AppendMenuW(m, MF_STRING | (g.session ? 0 : MF_GRAYED), ID_SAVE, (L"Save clip\t" + Wide(c.hotkey)).c_str());
 
@@ -1370,10 +1422,10 @@ void ShowMenu() {
     AppendMenuW(overlay, check(c.overlay.keys == OverlayPresets()[i].keys), ID_PRESET + i,
                 Wide(OverlayPresets()[i].name).c_str());
   AppendMenuW(overlay, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(overlay, MF_STRING, ID_OVERLAY_EDIT, L"Edit layout and lookâ€¦");
+  AppendMenuW(overlay, MF_STRING, ID_OVERLAY_EDIT, L"Edit layout and look…");
   AppendMenuW(m, MF_POPUP, UINT_PTR(overlay), L"Input overlay");
   AppendMenuW(m, check(c.copy_to_clipboard), ID_COPY, L"Copy new clips to clipboard");
-  AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")â€¦").c_str());
+  AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")…").c_str());
   AppendMenuW(m, MF_STRING, ID_OPEN_FOLDER, L"Open clips folder");
   AppendMenuW(m, MF_STRING, ID_OPEN_CONFIG, L"Edit settings");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -1536,7 +1588,7 @@ void OnSettingsMessage(const std::string& text) {
     const std::wstring err = TryShortcut(UINT(m.GetNamedNumber(L"vk", 0)), m.GetNamedBoolean(L"ctrl", false),
                                          m.GetNamedBoolean(L"alt", false), m.GetNamedBoolean(L"shift", false),
                                          m.GetNamedBoolean(L"win", false));
-    if (err != L"â€¦") SettingsSay("hotkeyResult", "error", Utf8(err));
+    if (err != L"…") SettingsSay("hotkeyResult", "error", Utf8(err));
   } else if (name == "cancelHotkey") {
     g.page_picking = false;
     g.hotkey.clear();
@@ -1649,9 +1701,11 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       }
       KillTimer(w, kCaptionTimer);
       return 0;
-    case WM_DESTROYCLIPBOARD:  // someone else copied something
+    case WM_DESTROYCLIPBOARD:  // someone else copied something (or our caption replaced the clip)
       if (!g.paste_file.empty()) g.paste_file.clear(), g.paste_caption.clear();
+      WatchPaste(false);
       return 0;
+    case WM_PASTE_KEY: OnPasteKey(); return 0;
     case WM_TIMER:
       if (wp == kCaptionTimer) return PutCaptionOnClipboard(), 0;
       if (wp == kReloadTimer) {
@@ -1690,7 +1744,8 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         SendClips();
       } else {
         PlayChime(false);
-        Balloon(L"Clip not saved", Wide(s->err));
+        if (g.cfg.save_notice) ShowToast(g.session ? g.session->hwnd : nullptr, L"Clip not saved", Wide(s->err), false);
+        else Balloon(L"Clip not saved", Wide(s->err));
         SettingsSay("saveFailed", "error", s->err);
       }
       return 0;

@@ -9,6 +9,7 @@
 #include <numeric>
 
 #include "../src/export.h"
+#include "../src/toast.h"
 #include "../src/preview.h"
 #include "../src/session.h"
 #include "../src/voice.h"
@@ -193,6 +194,14 @@ int main(int argc, char** argv) {
                              0, kW, kH, nullptr, nullptr, wc.hInstance, nullptr);
   ShowWindow(wnd, SW_SHOWNOACTIVATE);
 
+  if (argc > 2 && std::string_view(argv[1]) == "toast") {  // clip_bench toast outdir: the saved card's looks
+    const std::filesystem::path dir = argv[2];
+    const bool ok = ToastSnapshot(dir / "toast-copying.bmp", L"Clip saved", L"Copying to clipboard\u2026", true, 192) &&
+                    ToastSnapshot(dir / "toast-copied.bmp", L"Clip saved", L"Copied to clipboard", true, 192) &&
+                    ToastSnapshot(dir / "toast-failed.bmp", L"Clip not saved", L"Less than 2 GB free on the clips drive.", false, 192);
+    std::printf("toast: %s\n", ok ? "ok" : "failed");
+    return ok ? 0 : 1;
+  }
   if (argc > 3 && std::string_view(argv[1]) == "preview") {  // clip_bench preview in.mp4 outdir
     const int64_t t = QpcNow();
     const auto err = MakePreview(argv[2], argv[3]);
