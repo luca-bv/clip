@@ -1,6 +1,7 @@
 #include "discord.h"
 #include "export.h"
 #include "games.h"
+#include "preview.h"
 #include "session.h"
 #include "settings.h"
 #include "voice.h"
@@ -14,6 +15,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <regex>
 #include <set>
@@ -27,9 +30,9 @@ namespace json = winrt::Windows::Data::Json;
 
 namespace {
 enum : UINT {
-  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL
+  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL, WM_PREVIEW_READY
 };
-// Discord application whose name Discord shows as "Playing …". Empty turns the Discord activity off.
+// Discord application whose name Discord shows as "Playing â€¦". Empty turns the Discord activity off.
 constexpr char kDiscordAppId[] = "1560105311728308347";
 enum : UINT {
   ID_SAVE = 1, ID_PAUSE, ID_OPEN_FOLDER, ID_OPEN_CONFIG, ID_QUIT, ID_NEVER, ID_ALWAYS, ID_GAME_AUDIO, ID_MIC,
@@ -95,6 +98,17 @@ struct {
   bool exporting = false;
   std::atomic<bool> export_cancel{false};
 } g;
+
+// Background preview maker (PreviewLoop).
+struct {
+  std::mutex m;
+  std::condition_variable cv;
+  std::deque<std::pair<fs::path, std::string>> q;  // clip, its path as the page names it
+  std::set<fs::path> queued;
+  std::thread thread;
+  bool stop = false;
+  std::atomic<bool> recording{false};
+} pv;
 
 std::mutex g_log_m;
 std::ofstream g_log;
@@ -221,15 +235,11 @@ const std::vector<char>& Chime(bool ok) {
 void PlayChime(bool ok) { PlaySoundW(LPCWSTR(Chime(ok).data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT); }
 
 // "Clip saved" notification; clicking it shows the file in Explorer.
-void SavedNotice(const fs::path& file, bool copied) {
+void SavedNotice(const std::wstring& what, const std::wstring& next) {
   g.nid.uFlags = NIF_INFO;
   g.nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
   wcsncpy_s(g.nid.szInfoTitle, L"Clip saved", _TRUNCATE);
-  const std::wstring text = file.filename().wstring() +
-                            (!copied                ? L"\n"
-                             : g.cfg.share_caption ? L"\nCopied: Ctrl+V pastes it, with the caption in Discord. "
-                                                   : L"\nCopied to clipboard. ") +
-                            L"Click to show in folder.";
+  const std::wstring text = what + L"\n" + next;
   wcsncpy_s(g.nid.szInfo, text.c_str(), _TRUNCATE);
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
   g.balloon_shows_clip = true;
@@ -551,13 +561,13 @@ void PickerSay(const std::wstring& text) {
   InvalidateRect(g.picker, nullptr, TRUE);
 }
 
-// Sets the shortcut if it can be one and is free. Returns "" or why not; "…" means wait for more keys.
+// Sets the shortcut if it can be one and is free. Returns "" or why not; "â€¦" means wait for more keys.
 std::wstring TryShortcut(UINT vk, bool ctrl, bool alt, bool shift, bool win) {
   const std::string key = KeyName(vk);
   if (key.empty()) {
     if (vk != VK_CONTROL && vk != VK_MENU && vk != VK_SHIFT && vk != VK_LWIN && vk != VK_RWIN)
       return L"That key can't be a shortcut. Use an F-key, or a letter or number with Ctrl or Alt.";
-    return L"…";  // a modifier on its own: wait for the rest
+    return L"â€¦";  // a modifier on its own: wait for the rest
   }
   if (key.size() == 1 && !ctrl && !alt && !win)
     return L"Add Ctrl or Alt to a letter or number, so typing it doesn't save a clip.";
@@ -581,7 +591,7 @@ void OnPickerKey(UINT vk) {
   HWND picker = g.picker;
   const std::wstring err = TryShortcut(vk, ctrl, alt, shift, win);
   if (err.empty()) DestroyWindow(picker);
-  else if (err != L"…") PickerSay(err);
+  else if (err != L"â€¦") PickerSay(err);
 }
 
 LRESULT CALLBACK PickerProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
@@ -655,6 +665,8 @@ void StopSession() {
   if (g.proc) CloseHandle(g.proc);
   g.exit_wait = g.proc = nullptr;
   g.session.reset();
+  pv.recording = false;
+  pv.cv.notify_one();
   SyncDoubleTap();
   SyncVoice();
   SyncDiscord();
@@ -688,6 +700,8 @@ void StartSession(HWND w, DWORD pid, const std::string& exe) {
   SetTimer(g.wnd, kSyncTimer, 5000, nullptr);
   g.session_title = GameName(pid, exe);
   g.session_since = int64_t(time(nullptr));
+  pv.recording = true;
+  SettingsForgetHidden();  // a closed window gives its memory back to the game
   SyncDoubleTap();
   SyncVoice();
   SyncDiscord();
@@ -788,7 +802,7 @@ void SaveClip(double end_ago = 0) {
   ULARGE_INTEGER free;
   if (GetDiskFreeSpaceExW(folder.c_str(), &free, nullptr, nullptr) &&
       free.QuadPart < uint64_t(g.cfg.min_free_gb) << 30) {
-    PlaySoundW(L"SystemHand", nullptr, SND_ALIAS | SND_ASYNC);
+    PlayChime(false);
     return Balloon(L"Clip not saved", std::format(L"Less than {} GB free on the clips drive.", g.cfg.min_free_gb));
   }
   SYSTEMTIME t;
@@ -799,6 +813,11 @@ void SaveClip(double end_ago = 0) {
   g.session->Save(
       g.cfg.clip_seconds, file,
       [file](std::string err) { PostMessageW(g.wnd, WM_SAVED, 0, LPARAM(new Saved{std::move(err), file})); }, end_ago);
+  // Feedback the moment the key is pressed; writing the file and the clipboard copy finish in the background.
+  PlayChime(true);
+  g.last_clip = file;
+  SavedNotice(title + std::format(L" Â· last {} s", g.cfg.clip_seconds),
+              g.cfg.copy_to_clipboard ? L"On your clipboard in a moment. Click to show in folder." : L"Click to show in folder.");
 }
 
 HGLOBAL GlobalText(const std::wstring& s) {
@@ -825,7 +844,7 @@ HGLOBAL DropFiles(const fs::path& file) {
 
 // The clip as a file, the way Explorer copies one. Discord takes only the file when there's also text, so the
 // file is handed over when something pastes it (delayed rendering), and then the caption replaces it:
-// Ctrl+V attaches the clip, the next Ctrl+V types "#ClippedWithClip on …".
+// Ctrl+V attaches the clip, the next Ctrl+V types "#ClippedWithClip on â€¦".
 void CopyFileToClipboard(const fs::path& file, const std::wstring& caption) {
   if (!OpenClipboard(g.wnd)) return Log("can't copy clip to clipboard");
   EmptyClipboard();
@@ -894,6 +913,91 @@ std::optional<fs::path> ClipFromPage(const std::string& rel) {
   return p;
 }
 
+// ---- previews: thumbnail, filmstrip and waveform, made once per clip and cached ----
+constexpr wchar_t kCacheHost[] = L"cache.example";
+fs::path CacheRoot() { return KnownFolder(FOLDERID_LocalAppData) / L"Clip" / L"cache"; }
+// A folder per version of a clip: a rename or a re-save gets fresh previews.
+fs::path CacheDir(const fs::path& clip) {
+  std::error_code ec;
+  uint64_t h = 1469598103934665603ull;
+  auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+  for (unsigned char ch : Lower(Utf8(clip.wstring()))) mix(ch);
+  mix(fs::file_size(clip, ec));
+  mix(uint64_t(fs::last_write_time(clip, ec).time_since_epoch().count()));
+  return CacheRoot() / std::format(L"{:016x}", h);
+}
+void ServeCache() {
+  std::error_code ec;
+  fs::create_directories(CacheRoot(), ec);
+  SettingsServe(kCacheHost, CacheRoot());
+}
+std::string CacheUrl(const fs::path& dir, const wchar_t* file) {
+  return Utf8(std::format(L"https://{}/{}/{}", kCacheHost, dir.filename().wstring(), file));
+}
+
+
+// One clip at a time at background priority, and not while a game records unless the window is open.
+void PreviewLoop() {
+  SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+  for (;;) {
+    std::pair<fs::path, std::string> job;
+    {
+      std::unique_lock l(pv.m);
+      for (;;) {
+        if (pv.stop) return;
+        if (!pv.q.empty() && (!pv.recording || SettingsVisible())) break;
+        pv.cv.wait_for(l, std::chrono::seconds(2));
+      }
+      job = std::move(pv.q.front());
+      pv.q.pop_front();
+      pv.queued.erase(job.first);
+    }
+    std::error_code ec;
+    const fs::path dir = CacheDir(job.first);
+    if (!fs::exists(dir / L"strip.jpg", ec) && fs::exists(job.first, ec))
+      if (const auto err = MakePreview(job.first, dir); !err.empty()) Log("preview {}: {}", Utf8(job.first.filename().wstring()), err);
+    PostMessageW(g.wnd, WM_PREVIEW_READY, 0, LPARAM(new std::string(job.second)));
+  }
+}
+void QueuePreview(const fs::path& clip, const std::string& rel, bool first) {
+  std::lock_guard l(pv.m);
+  if (!pv.thread.joinable()) pv.thread = std::thread(PreviewLoop);
+  if (!pv.queued.insert(clip).second) return;
+  if (first) pv.q.emplace_front(clip, rel);
+  else pv.q.emplace_back(clip, rel);
+  pv.cv.notify_one();
+}
+void StopPreviews() {
+  {
+    std::lock_guard l(pv.m);
+    pv.stop = true;
+  }
+  pv.cv.notify_all();
+  if (pv.thread.joinable()) pv.thread.join();
+}
+// Previews of clips untouched for two months go; they're remade if the clip is opened again.
+void PruneCache() {
+  std::error_code ec;
+  const auto old = fs::file_time_type::clock::now() - std::chrono::hours(24 * 60);
+  for (auto& e : fs::directory_iterator(CacheRoot(), ec))
+    if (e.is_directory(ec) && e.last_write_time(ec) < old) fs::remove_all(e.path(), ec);
+}
+toml::table PreviewInfo(const fs::path& dir) {
+  std::error_code ec;
+  toml::table t;
+  if (fs::exists(dir / L"thumb.jpg", ec)) t.insert("thumb", CacheUrl(dir, L"thumb.jpg"));
+  if (fs::exists(dir / L"strip.jpg", ec))
+    t.insert("strip", toml::table{{"url", CacheUrl(dir, L"strip.jpg")}, {"tiles", kStripTiles}, {"cols", kStripCols},
+                                  {"w", kTileW}, {"h", kTileH}});
+  if (std::ifstream f{dir / L"duration.txt"}) {  // "<seconds> <keyframes>"
+    double dur = 0;
+    int keys = 0;
+    if (f >> dur) t.insert("duration", dur);
+    if (f >> keys && t.contains("strip")) t["strip"].as_table()->insert("keys", keys);
+  }
+  return t;
+}
+
 void SendClips() {
   if (!SettingsWindow()) return;
   struct Item {
@@ -916,8 +1020,13 @@ void SendClips() {
   toml::array list;
   for (auto& i : items) {  // clips sit in a folder per exe; the page shows the game's own name
     const auto known = FindGame(i.game);
-    list.push_back(toml::table{{"path", i.rel}, {"folder", i.game}, {"game", known ? known->name : i.game},
-                               {"size", i.size}, {"time", i.ms}});
+    toml::table c{{"path", i.rel}, {"folder", i.game}, {"game", known ? known->name : i.game},
+                  {"size", i.size}, {"time", i.ms}};
+    const fs::path clip = root / Wide(i.rel);
+    const toml::table p = PreviewInfo(CacheDir(clip));
+    if (!p.contains("strip")) QueuePreview(clip, i.rel, false);  // newest first: the list is sorted
+    for (auto& [k, v] : p) c.insert(k, v);
+    list.push_back(std::move(c));
   }
   toml::table t{{"type", "clips"}, {"host", Utf8(std::wstring(L"https://") + kClipsHost + L"/")}, {"items", list}};
   std::stringstream ss;
@@ -942,6 +1051,8 @@ ExportOptions EditFromPage(const json::JsonObject& m) {
       if (a.Size() == 2) o.keep.emplace_back(a.GetNumberAt(0), a.GetNumberAt(1));
     }
   o.audio = int(m.GetNamedNumber(L"audio", 0));
+  if (m.HasKey(L"gains"))
+    for (auto g : m.GetNamedArray(L"gains")) o.gains.push_back(float(std::clamp(g.GetNumber(), 0.0, 2.0)));
   o.vertical = m.GetNamedBoolean(L"vertical", false);
   o.crop_x = m.GetNamedNumber(L"cropX", 0.5);
   o.watermark = m.GetNamedBoolean(L"watermark", g.cfg.watermark);
@@ -956,16 +1067,24 @@ fs::path FreeName(const fs::path& folder, const std::wstring& stem) {
 
 struct ExportJob {
   ExportOptions o;
+  std::string page_path;    // the clip as the page names it; empty for a hotkey save's own copy
   bool copy = false;         // put the result on the clipboard
   std::wstring caption;      // pasted with it
-  fs::path saved;            // a just-saved clip whose "saved" notice waits for this copy
   std::string err;
 };
 
+// Tells the page an export it asked for has finished; page_path lets it match its own request.
+void ExportDoneToPage(const std::string& page_path, const std::string& err, bool copied, const std::string& file) {
+  if (page_path.empty()) return;
+  toml::table t{{"type", "exportDone"}, {"path", page_path}, {"error", err}, {"copied", copied}, {"file", file}};
+  std::stringstream ss;
+  ss << toml::json_formatter{t};
+  SettingsPost(ss.str());
+}
+
 void StartExport(ExportJob job) {
   if (g.exporting) {
-    if (!job.saved.empty()) SavedNotice(job.saved, false);
-    return SettingsSay("exportDone", "error", "Another export is still running.");
+    return ExportDoneToPage(job.page_path, "Another export is still running.", false, "");
   }
   if (g.export_thread.joinable()) g.export_thread.join();
   g.exporting = true;
@@ -983,13 +1102,8 @@ void OnExportDone(std::unique_ptr<ExportJob> job) {
   if (g.export_thread.joinable()) g.export_thread.join();
   const bool ok = job->err.empty();
   if (ok && job->copy) CopyFileToClipboard(job->o.out, job->caption);
-  if (!job->saved.empty()) SavedNotice(job->saved, ok && job->copy);
-  else if (ok) PlayChime(true);
-  toml::table t{{"type", "exportDone"}, {"error", job->err}, {"copied", ok && job->copy},
-                {"file", ok ? Utf8(job->o.out.wstring()) : ""}};
-  std::stringstream ss;
-  ss << toml::json_formatter{t};
-  SettingsPost(ss.str());
+  if (ok && !job->page_path.empty()) PlayChime(true);  // a hotkey save already chimed when it was pressed
+  ExportDoneToPage(job->page_path, job->err, ok && job->copy, ok ? Utf8(job->o.out.wstring()) : "");
   if (ok && !job->copy) {
     g.last_clip = job->o.out;
     SendClips();
@@ -1001,7 +1115,7 @@ std::wstring Caption(const SYSTEMTIME& t) {
                      (t.wHour + 11) % 12 + 1, t.wMinute, t.wHour < 12 ? L"AM" : L"PM");
 }
 
-// When a clip was recorded: the time in its name ("… 2026-10-14 21-19-03"), else when the file was created.
+// When a clip was recorded: the time in its name ("â€¦ 2026-10-14 21-19-03"), else when the file was created.
 SYSTEMTIME RecordedAt(const fs::path& clip) {
   SYSTEMTIME t{};
   const std::wstring stem = clip.stem().wstring();
@@ -1020,13 +1134,12 @@ SYSTEMTIME RecordedAt(const fs::path& clip) {
 }
 
 // The clipboard copy of a clip: watermarked and sized for Discord unless settings say otherwise.
-void CopyClip(const fs::path& clip, ExportOptions edit, fs::path saved) {
+void CopyClip(const fs::path& clip, ExportOptions edit, std::string page_path = {}) {
   const SYSTEMTIME t = RecordedAt(clip);
   const std::wstring caption = g.cfg.share_caption ? Caption(t) : L"";
-  if (!edit.watermark && g.cfg.share_size == "original" && edit.keep.empty() && edit.audio == 0 && !edit.vertical) {
+  if (!edit.watermark && g.cfg.share_size == "original" && edit.keep.empty() && edit.audio == 0 && edit.gains.empty() && !edit.vertical) {
     CopyFileToClipboard(clip, caption);
-    if (!saved.empty()) SavedNotice(saved, true);
-    return;
+    return ExportDoneToPage(page_path, "", true, Utf8(clip.wstring()));
   }
   std::error_code ec;
   fs::create_directories(SharedFolder(), ec);
@@ -1038,8 +1151,8 @@ void CopyClip(const fs::path& clip, ExportOptions edit, fs::path saved) {
   job.o.out = FreeName(SharedFolder(), clip.stem().wstring());
   ApplyPreset(job.o, g.cfg.share_size);
   job.copy = true;
+  job.page_path = std::move(page_path);
   job.caption = caption;
-  job.saved = std::move(saved);
   StartExport(std::move(job));
 }
 
@@ -1059,7 +1172,11 @@ void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
     return;
   }
   const auto clip = ClipFromPage(winrt::to_string(m.GetNamedString(L"path", L"")));
-  if (!clip) return SendClips();  // gone or not a clip: refresh the page's list
+  if (!clip) {  // gone or not a clip: refresh the page's list
+    if (name == "exportClip")
+      ExportDoneToPage(winrt::to_string(m.GetNamedString(L"path", L"")), "This clip is gone.", false, "");
+    return SendClips();
+  }
   if (name == "showClip") {
     g.last_clip = *clip;
     ShowLastClip();
@@ -1074,15 +1191,25 @@ void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
       fs::rename(*clip, clip->parent_path() / (stem + L".mp4"), ec);
     SendClips();
   } else if (name == "exportClip") {
-    if (m.GetNamedBoolean(L"copy", false)) return CopyClip(*clip, EditFromPage(m), {});
+    const std::string page_path = winrt::to_string(m.GetNamedString(L"path", L""));
+    if (m.GetNamedBoolean(L"copy", false)) return CopyClip(*clip, EditFromPage(m), page_path);
     ExportJob job;
+    job.page_path = page_path;
     job.o = EditFromPage(m);
     job.o.in = *clip;
     job.o.out = FreeName(ClipsFolder() / L"Exports", clip->stem().wstring());
     ApplyPreset(job.o, winrt::to_string(m.GetNamedString(L"preset", L"original")));
     StartExport(std::move(job));
   } else if (name == "clipInfo") {
-    std::thread([path = *clip, rel = winrt::to_string(m.GetNamedString(L"path", L""))] {
+    const std::string rel = winrt::to_string(m.GetNamedString(L"path", L""));
+    const fs::path dir = CacheDir(*clip);
+    std::error_code ec;
+    if (!fs::exists(dir / L"strip.jpg", ec)) QueuePreview(*clip, rel, true);  // the open clip jumps the queue
+    if (std::ifstream f{dir / L"info.json", std::ios::binary}) {  // waveform read before: answer at once
+      std::string json{std::istreambuf_iterator<char>(f), {}};
+      if (!json.empty()) return SettingsPost(json);
+    }
+    std::thread([path = *clip, rel, dir] {
       const ClipInfo info = ReadClipInfo(path);
       std::string peaks;
       peaks.reserve(info.peaks.size() * 5);
@@ -1096,6 +1223,11 @@ void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
       ss << toml::json_formatter{t};
       std::string json = ss.str();
       json.insert(json.rfind('}'), ",\"peaks\":[" + peaks + "]");
+      if (info.error.empty()) {
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::ofstream(dir / L"info.json", std::ios::binary | std::ios::trunc) << json;
+      }
       PostMessageW(g.wnd, WM_CLIP_INFO, 0, LPARAM(new std::string(std::move(json))));
     }).detach();
   }
@@ -1205,7 +1337,7 @@ void ShowMenu() {
   std::wstring status = g.paused ? L"Paused" : g.session ? L"Recording " + g.session_title : L"Waiting for a game";
   AppendMenuW(m, MF_STRING | MF_GRAYED, 0, status.c_str());
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING, ID_SETTINGS, L"Settings…");
+  AppendMenuW(m, MF_STRING, ID_SETTINGS, L"Settingsâ€¦");
   SetMenuDefaultItem(m, ID_SETTINGS, FALSE);
   AppendMenuW(m, MF_STRING | (g.session ? 0 : MF_GRAYED), ID_SAVE, (L"Save clip\t" + Wide(c.hotkey)).c_str());
 
@@ -1238,10 +1370,10 @@ void ShowMenu() {
     AppendMenuW(overlay, check(c.overlay.keys == OverlayPresets()[i].keys), ID_PRESET + i,
                 Wide(OverlayPresets()[i].name).c_str());
   AppendMenuW(overlay, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(overlay, MF_STRING, ID_OVERLAY_EDIT, L"Edit layout and look…");
+  AppendMenuW(overlay, MF_STRING, ID_OVERLAY_EDIT, L"Edit layout and lookâ€¦");
   AppendMenuW(m, MF_POPUP, UINT_PTR(overlay), L"Input overlay");
   AppendMenuW(m, check(c.copy_to_clipboard), ID_COPY, L"Copy new clips to clipboard");
-  AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")…").c_str());
+  AppendMenuW(m, MF_STRING, ID_SHORTCUT, (L"Change shortcut (" + Wide(c.hotkey) + L")â€¦").c_str());
   AppendMenuW(m, MF_STRING, ID_OPEN_FOLDER, L"Open clips folder");
   AppendMenuW(m, MF_STRING, ID_OPEN_CONFIG, L"Edit settings");
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -1260,6 +1392,7 @@ void ShowMenu() {
 void SettingsPush() {
   if (!SettingsWindow()) return;
   SettingsServe(kClipsHost, ClipsFolder());  // follows a changed clips folder
+  ServeCache();
   const OverlayConfig& ov = g.cfg.overlay;
   toml::array presets;
   int preset = -1;
@@ -1390,6 +1523,7 @@ void OnSettingsMessage(const std::string& text) {
   if (!json::JsonObject::TryParse(Wide(text), m)) return;
   const std::string type = winrt::to_string(m.GetNamedString(L"type", L""));
   if (type == "ready") return SettingsPush();
+  if (type == "shown") return SendClips();  // reopened: catch up on clips saved while hidden
   if (type == "log") return Log("page: {}", winrt::to_string(m.GetNamedString(L"text", L"")));
   if (type == "set") return SetFromPage(winrt::to_string(m.GetNamedString(L"key", L"")), m.GetNamedValue(L"value"));
   if (type != "action") return;
@@ -1402,7 +1536,7 @@ void OnSettingsMessage(const std::string& text) {
     const std::wstring err = TryShortcut(UINT(m.GetNamedNumber(L"vk", 0)), m.GetNamedBoolean(L"ctrl", false),
                                          m.GetNamedBoolean(L"alt", false), m.GetNamedBoolean(L"shift", false),
                                          m.GetNamedBoolean(L"win", false));
-    if (err != L"…") SettingsSay("hotkeyResult", "error", Utf8(err));
+    if (err != L"â€¦") SettingsSay("hotkeyResult", "error", Utf8(err));
   } else if (name == "cancelHotkey") {
     g.page_picking = false;
     g.hotkey.clear();
@@ -1433,6 +1567,7 @@ void OnSettingsMessage(const std::string& text) {
 void OpenSettings() {
   ShowSettings(OnSettingsMessage);
   SettingsServe(kClipsHost, ClipsFolder());
+  ServeCache();
 }
 
 // ---- window ----
@@ -1466,6 +1601,17 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       SettingsPush();
       SendClips();
       return 0;
+    case WM_PREVIEW_READY: {
+      std::unique_ptr<std::string> rel(reinterpret_cast<std::string*>(lp));
+      if (!SettingsWindow()) return 0;
+      toml::table t = PreviewInfo(CacheDir(ClipsFolder() / Wide(*rel)));
+      t.insert("type", "preview");
+      t.insert("path", *rel);
+      std::stringstream ss;
+      ss << toml::json_formatter{t};
+      SettingsPost(ss.str());
+      return 0;
+    }
     case WM_CLIP_INFO: {
       std::unique_ptr<std::string> json(reinterpret_cast<std::string*>(lp));
       SettingsPost(*json);
@@ -1535,11 +1681,11 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_SAVED: {
       std::unique_ptr<Saved> s(reinterpret_cast<Saved*>(lp));
-      if (s->err.empty()) {
-        PlayChime(true);
+      if (s->err.empty()) {  // the chime and notice already went out when the key was pressed
         g.last_clip = s->file;
-        if (g.cfg.copy_to_clipboard) CopyClip(s->file, {.watermark = g.cfg.watermark}, s->file);  // the notice waits for the copy
-        else SavedNotice(s->file, false);
+        if (g.cfg.copy_to_clipboard) CopyClip(s->file, {.watermark = g.cfg.watermark});
+        std::error_code ec;
+        QueuePreview(s->file, Utf8(fs::relative(s->file, ClipsFolder(), ec).generic_wstring()), true);
         SettingsSay("saved", "file", Utf8(s->file.filename().wstring()));
         SendClips();
       } else {
@@ -1640,6 +1786,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
       FindFirstChangeNotificationW(cfg_dir.c_str(), FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME);
   const DWORD n_handles = watch != INVALID_HANDLE_VALUE ? 1 : 0;
   CheckForeground();
+  std::thread(PruneCache).detach();
 
   for (MSG msg;;) {
     const DWORD r = MsgWaitForMultipleObjects(n_handles, &watch, FALSE, INFINITE, QS_ALLINPUT);
@@ -1652,6 +1799,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
       if (msg.message == WM_QUIT) {
         g.export_cancel = true;
         if (g.export_thread.joinable()) g.export_thread.join();
+        StopPreviews();
         g.discord.reset();
         StopSession();
         UnhookWinEvent(fg_hook);

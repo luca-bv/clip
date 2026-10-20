@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
 
 using Microsoft::WRL::Callback;
 using winrt::com_ptr;
@@ -20,20 +21,24 @@ struct {
   com_ptr<ICoreWebView2Controller> controller;
   com_ptr<ICoreWebView2> view;
   std::function<void(const std::string&)> on_message;
-  std::wstring host, served_host;  // folder mapping wanted, and the one the view has
-  std::filesystem::path folder, served_folder;
+  std::map<std::wstring, std::filesystem::path> want, served;  // host -> folder: asked for, and what the view has
 } s;
+
+constexpr UINT_PTR kForgetTimer = 1;
+constexpr UINT kKeepHiddenMs = 10 * 60 * 1000;  // a closed window stays ready this long, then frees its memory
 
 void ApplyServe() {
   auto v3 = s.view ? s.view.try_as<ICoreWebView2_3>() : nullptr;
-  if (!v3 || s.host.empty() || (s.host == s.served_host && s.folder == s.served_folder)) return;
-  if (!s.served_host.empty()) v3->ClearVirtualHostNameToFolderMapping(s.served_host.c_str());
-  std::error_code ec;
-  std::filesystem::create_directories(s.folder, ec);
-  if (SUCCEEDED(v3->SetVirtualHostNameToFolderMapping(s.host.c_str(), s.folder.c_str(),
-                                                      COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW))) {
-    s.served_host = s.host;
-    s.served_folder = s.folder;
+  if (!v3) return;
+  for (auto& [host, folder] : s.want) {
+    if (auto it = s.served.find(host); it != s.served.end()) {
+      if (it->second == folder) continue;
+      v3->ClearVirtualHostNameToFolderMapping(host.c_str());
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    if (SUCCEEDED(v3->SetVirtualHostNameToFolderMapping(host.c_str(), folder.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW)))
+      s.served[host] = folder;
   }
 }
 
@@ -101,7 +106,7 @@ void OnController(ICoreWebView2Controller* c) {
           .Get(),
       &token);
   Fit();
-  s.served_host.clear();
+  s.served.clear();
   ApplyServe();
   if (auto v3 = s.view.try_as<ICoreWebView2_3>())
     v3->SetVirtualHostNameToFolderMapping(L"clip.example", WriteUi().c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
@@ -109,6 +114,8 @@ void OnController(ICoreWebView2Controller* c) {
 }
 
 void StartWebView() {
+  // Audio track switching, so the editor can play each of a clip's tracks on its own.
+  SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", L"--enable-blink-features=AudioVideoTracks");
   const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
       nullptr, AppData(L"WebView2").c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
@@ -151,6 +158,14 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       SetWindowPos(w, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
       return 0;
     }
+    case WM_CLOSE:  // hide, so opening it again is instant; the page pauses itself
+      ShowWindow(w, SW_HIDE);
+      SettingsPost(R"({"type":"hidden"})");
+      SetTimer(w, kForgetTimer, kKeepHiddenMs, nullptr);
+      return 0;
+    case WM_TIMER:
+      if (wp == kForgetTimer && !IsWindowVisible(w)) DestroyWindow(w);
+      return 0;
     case WM_DESTROY:
       if (s.controller) s.controller->Close();
       s.controller = nullptr;
@@ -165,7 +180,13 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
 void ShowSettings(std::function<void(const std::string&)> on_message) {
   s.on_message = std::move(on_message);
   if (s.wnd) {
-    if (IsIconic(s.wnd)) ShowWindow(s.wnd, SW_RESTORE);
+    KillTimer(s.wnd, kForgetTimer);
+    if (!IsWindowVisible(s.wnd)) {
+      ShowWindow(s.wnd, SW_SHOWNORMAL);
+      SettingsPost(R"({"type":"shown"})");
+    } else if (IsIconic(s.wnd)) {
+      ShowWindow(s.wnd, SW_RESTORE);
+    }
     SetForegroundWindow(s.wnd);
     return;
   }
@@ -198,7 +219,12 @@ void SettingsPost(const std::string& json) {
 HWND SettingsWindow() { return s.wnd; }
 
 void SettingsServe(const std::wstring& host, const std::filesystem::path& folder) {
-  s.host = host;
-  s.folder = folder;
+  s.want[host] = folder;
   ApplyServe();
+}
+
+bool SettingsVisible() { return s.wnd && IsWindowVisible(s.wnd); }
+
+void SettingsForgetHidden() {
+  if (s.wnd && !IsWindowVisible(s.wnd)) DestroyWindow(s.wnd);
 }

@@ -19,11 +19,11 @@ FetchContent_MakeAvailable(webview2)
 # An LGPL shared FFmpeg build with include/, lib/ and bin/ (CI downloads one from BtbN/FFmpeg-Builds).
 set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/ffmpeg" CACHE PATH "FFmpeg shared build")
 
-add_executable(Clip WIN32 src/main.cpp src/session.cpp src/ring.cpp src/video.cpp src/gpu.cpp src/watermark.cpp src/export.cpp src/discord.cpp src/games.cpp src/voice.cpp src/audio.cpp src/overlay.cpp src/input.cpp src/editor.cpp src/settings.cpp src/clip.manifest src/clip.rc)
+add_executable(Clip WIN32 src/main.cpp src/session.cpp src/ring.cpp src/video.cpp src/gpu.cpp src/watermark.cpp src/export.cpp src/preview.cpp src/discord.cpp src/games.cpp src/voice.cpp src/audio.cpp src/overlay.cpp src/input.cpp src/editor.cpp src/settings.cpp src/clip.manifest src/clip.rc)
 set_source_files_properties(src/clip.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/ui/index.html;${CMAKE_SOURCE_DIR}/src/clip.ico")
 target_compile_definitions(Clip PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(Clip PRIVATE /utf-8 /W3 /permissive-)
-set(FFMPEG_LIBS "${FFMPEG_DIR}/lib/avcodec.lib" "${FFMPEG_DIR}/lib/avformat.lib" "${FFMPEG_DIR}/lib/avutil.lib")
+set(FFMPEG_LIBS "${FFMPEG_DIR}/lib/avcodec.lib" "${FFMPEG_DIR}/lib/avformat.lib" "${FFMPEG_DIR}/lib/avutil.lib" "${FFMPEG_DIR}/lib/swscale.lib")
 target_include_directories(Clip PRIVATE "${FFMPEG_DIR}/include" "${webview2_SOURCE_DIR}/build/native/include")
 target_link_libraries(Clip PRIVATE
   tomlplusplus::tomlplusplus ${FFMPEG_LIBS} "${webview2_SOURCE_DIR}/build/native/x64/WebView2LoaderStatic.lib"
@@ -34,7 +34,7 @@ add_custom_command(TARGET Clip POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} $<TARGET_FILE_DIR:Clip>)
 
 # What recording costs a game: cmake --build build --config Release --target clip_bench
-add_executable(clip_bench EXCLUDE_FROM_ALL tools/bench.cpp src/ring.cpp src/video.cpp src/gpu.cpp src/watermark.cpp src/export.cpp src/voice.cpp src/overlay.cpp src/input.cpp)
+add_executable(clip_bench EXCLUDE_FROM_ALL tools/bench.cpp src/ring.cpp src/video.cpp src/gpu.cpp src/watermark.cpp src/export.cpp src/preview.cpp src/voice.cpp src/overlay.cpp src/input.cpp)
 target_compile_definitions(clip_bench PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(clip_bench PRIVATE /utf-8 /W3 /permissive-)
 target_include_directories(clip_bench PRIVATE "${FFMPEG_DIR}/include")

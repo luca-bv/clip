@@ -1,5 +1,6 @@
 #include "export.h"
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 
@@ -69,15 +70,168 @@ struct Segments {
   double end() const { return keep.empty() ? 0 : keep.back().second; }
 };
 
+float Sample(const AVFrame* f, int ch, int s) {
+  const int n = f->ch_layout.nb_channels;
+  switch (f->format) {
+    case AV_SAMPLE_FMT_FLTP: return reinterpret_cast<const float*>(f->data[ch])[s];
+    case AV_SAMPLE_FMT_FLT: return reinterpret_cast<const float*>(f->data[0])[s * n + ch];
+    case AV_SAMPLE_FMT_S16P: return reinterpret_cast<const int16_t*>(f->data[ch])[s] / 32768.f;
+    case AV_SAMPLE_FMT_S16: return reinterpret_cast<const int16_t*>(f->data[0])[s * n + ch] / 32768.f;
+    default: return 0;
+  }
+}
+
+// Decodes several audio tracks, adds them up at their own volumes, keeps only the kept parts and encodes one
+// stereo AAC track. Tracks arrive interleaved; a sample is final once every track has decoded past it.
+struct Mixer {
+  struct Track {
+    int stream;
+    float gain;
+    AVCodecContext* dec;
+    int64_t upto;  // decoded up to this sample
+  };
+  std::vector<Track> tracks;
+  AVCodecContext* enc = nullptr;
+  AVStream* st = nullptr;
+  AVFrame* frame = av_frame_alloc();
+  AVPacket* pkt = av_packet_alloc();
+  const Segments& seg;
+  int sr = 48000;
+  int64_t base = 0, out_pts = 0;    // acc[c][0] is sample `base`
+  std::vector<float> acc[2], pend[2];  // summed but not final; final, kept and not yet encoded
+
+  Mixer(AVFormatContext* in, AVFormatContext* out, const std::vector<std::pair<int, float>>& want, const Segments& s)
+      : seg(s) {
+    for (auto [i, gain] : want) {
+      const AVCodecParameters* p = in->streams[i]->codecpar;
+      const AVCodec* c = avcodec_find_decoder(p->codec_id);
+      if (!c) continue;
+      if (tracks.empty()) sr = p->sample_rate;
+      if (p->sample_rate != sr) {
+        Log("export: track {} is {} Hz, not {} Hz; left out", i, p->sample_rate, sr);
+        continue;
+      }
+      AVCodecContext* d = avcodec_alloc_context3(c);
+      CheckAv(avcodec_parameters_to_context(d, p), "audio format");
+      d->pkt_timebase = in->streams[i]->time_base;
+      CheckAv(avcodec_open2(d, c, nullptr), "open audio decoder");
+      tracks.push_back({i, gain, d, 0});
+    }
+    if (tracks.empty()) throw std::runtime_error("no audio to mix");
+    const AVCodec* ec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    if (!ec) throw std::runtime_error("no AAC encoder");
+    enc = avcodec_alloc_context3(ec);
+    enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+    enc->sample_rate = sr;
+    av_channel_layout_default(&enc->ch_layout, 2);
+    enc->bit_rate = 192000;
+    enc->time_base = {1, sr};
+    if (out->oformat->flags & AVFMT_GLOBALHEADER) enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    CheckAv(avcodec_open2(enc, ec, nullptr), "open AAC encoder");
+    st = avformat_new_stream(out, nullptr);
+    CheckAv(avcodec_parameters_from_context(st->codecpar, enc), "audio format");
+    st->time_base = enc->time_base;
+    base = std::llround(seg.keep.front().first * sr);
+    for (auto& t : tracks) t.upto = base;
+  }
+  ~Mixer() {
+    for (auto& t : tracks) avcodec_free_context(&t.dec);
+    avcodec_free_context(&enc);
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+  }
+  Track* For(int stream) {
+    for (auto& t : tracks)
+      if (t.stream == stream) return &t;
+    return nullptr;
+  }
+  void Packet(Track& t, AVPacket* p, AVFormatContext* out) {
+    if (avcodec_send_packet(t.dec, p) < 0) return;
+    const AVRational tb = t.dec->pkt_timebase;
+    while (avcodec_receive_frame(t.dec, frame) == 0) {
+      if (frame->pts != AV_NOPTS_VALUE) {
+        const int64_t at = av_rescale_q(frame->pts, tb, {1, sr});
+        const int n = frame->nb_samples, fch = frame->ch_layout.nb_channels;
+        if (at + n > base + int64_t(acc[0].size()))
+          for (auto& a : acc) a.resize(size_t(std::max<int64_t>(0, at + n - base)), 0.f);
+        for (int s = 0; s < n; s++) {
+          const int64_t k = at + s - base;
+          if (k < 0) continue;
+          for (int c = 0; c < 2; c++) acc[c][size_t(k)] += t.gain * Sample(frame, std::min(c, fch - 1), s);
+        }
+        t.upto = std::max(t.upto, at + n);
+      }
+      av_frame_unref(frame);
+    }
+    Flush(false, out);
+  }
+  void Flush(bool last, AVFormatContext* out) {
+    int64_t ready = last ? base + int64_t(acc[0].size()) : INT64_MAX;
+    if (!last)
+      for (auto& t : tracks) ready = std::min(ready, t.upto);
+    const int64_t n = std::min<int64_t>(ready - base, int64_t(acc[0].size()));
+    if (n <= 0 && !last) return;
+    for (int64_t k = 0; k < n; k++)
+      if (seg.Map(double(base + k) / sr))
+        for (int c = 0; c < 2; c++) pend[c].push_back(std::clamp(acc[c][size_t(k)], -1.f, 1.f));
+    for (auto& a : acc) a.erase(a.begin(), a.begin() + std::max<int64_t>(0, n));
+    base += std::max<int64_t>(0, n);
+    const size_t fs = size_t(enc->frame_size > 0 ? enc->frame_size : 1024);
+    if (last && pend[0].size() % fs)
+      for (auto& p : pend) p.resize((p.size() / fs + 1) * fs, 0.f);
+    size_t used = 0;
+    for (; pend[0].size() - used >= fs; used += fs) {
+      AVFrame* f = av_frame_alloc();
+      f->format = AV_SAMPLE_FMT_FLTP;
+      f->sample_rate = sr;
+      av_channel_layout_default(&f->ch_layout, 2);
+      f->nb_samples = int(fs);
+      CheckAv(av_frame_get_buffer(f, 0), "audio frame");
+      for (int c = 0; c < 2; c++) memcpy(f->data[c], pend[c].data() + used, fs * sizeof(float));
+      f->pts = out_pts;
+      out_pts += int64_t(fs);
+      const int r = avcodec_send_frame(enc, f);
+      av_frame_free(&f);
+      CheckAv(r, "encode audio");
+      Drain(out);
+    }
+    for (auto& p : pend) p.erase(p.begin(), p.begin() + used);
+    if (last) {
+      avcodec_send_frame(enc, nullptr);
+      Drain(out);
+    }
+  }
+  void Drain(AVFormatContext* out) {
+    while (avcodec_receive_packet(enc, pkt) == 0) {
+      av_packet_rescale_ts(pkt, enc->time_base, st->time_base);
+      pkt->stream_index = st->index;
+      CheckAv(av_interleaved_write_frame(out, pkt), "write audio");
+    }
+  }
+};
+
 std::string Run(const ExportOptions& o, const std::function<void(double)>& progress, const std::atomic<bool>& cancel) {
   Job j;
   CheckAv(avformat_open_input(&j.in, Utf8(o.in.wstring()).c_str(), nullptr, nullptr), "open clip");
   CheckAv(avformat_find_stream_info(j.in, nullptr), "read clip");
   const int vi = av_find_best_stream(j.in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
   CheckAv(vi, "find video");
-  int ai = -1;
-  for (unsigned i = 0, n = 0; i < j.in->nb_streams && ai < 0 && o.audio >= 0; i++)
-    if (j.in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && int(n++) == o.audio) ai = int(i);
+  std::vector<int> aud;  // audio streams: the mix first, then each source on its own
+  for (unsigned i = 0; i < j.in->nb_streams; i++)
+    if (j.in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) aud.push_back(int(i));
+  int ai = o.audio >= 0 && o.audio < int(aud.size()) ? aud[size_t(o.audio)] : -1;
+  // Per-track volumes: copy a track as is when that's what they amount to, else mix.
+  std::vector<std::pair<int, float>> mix;
+  if (!o.gains.empty() && aud.size() >= 2) {
+    std::vector<std::pair<int, float>> on;
+    for (size_t k = 1; k < aud.size(); k++)
+      if (const float g = k - 1 < o.gains.size() ? o.gains[k - 1] : 1.f; g > 0.001f) on.emplace_back(aud[k], g);
+    const bool unity = std::ranges::all_of(on, [](auto& p) { return std::abs(p.second - 1) < 0.001f; });
+    if (on.empty()) ai = -1;
+    else if (unity && on.size() == aud.size() - 1) ai = aud[0];
+    else if (unity && on.size() == 1) ai = on[0].first;
+    else ai = -1, mix = std::move(on);
+  }
   AVStream* vs = j.in->streams[vi];
   AVStream* as = ai >= 0 ? j.in->streams[ai] : nullptr;
 
@@ -108,7 +262,7 @@ std::string Run(const ExportOptions& o, const std::function<void(double)>& progr
   int64_t bitrate = o.bitrate_mbps * int64_t(1000000);
   int out_h = o.max_height > 0 ? std::min(src_h, o.max_height) : src_h;
   if (o.target_bytes > 0) {
-    const int64_t audio = !as ? 0 : as->codecpar->bit_rate > 0 ? as->codecpar->bit_rate : 160000;
+    const int64_t audio = !mix.empty() ? 192000 : !as ? 0 : as->codecpar->bit_rate > 0 ? as->codecpar->bit_rate : 160000;
     bitrate = std::clamp<int64_t>(int64_t(double(o.target_bytes) * 8 * 0.92 / seg.total) - audio, 300000, bitrate);
     if (bitrate < 2500000) out_h = std::min(out_h, 720);
     if (bitrate < 1000000) out_h = std::min(out_h, 480);
@@ -161,6 +315,8 @@ std::string Run(const ExportOptions& o, const std::function<void(double)>& progr
     oas->codecpar->codec_tag = 0;
     oas->time_base = as->time_base;
   }
+  std::optional<Mixer> mixer;
+  if (!mix.empty()) mixer.emplace(j.in, j.out, mix, seg);
   const std::string out_path = Utf8(o.out.wstring());
   j.out->url = av_strdup(out_path.c_str());  // +faststart reopens the file by name
   CheckAv(avio_open(&j.out->pb, out_path.c_str(), AVIO_FLAG_WRITE), "create file");
@@ -237,6 +393,12 @@ std::string Run(const ExportOptions& o, const std::function<void(double)>& progr
       drain_decoder();
       continue;
     }
+    if (mixer)
+      if (auto* t = mixer->For(j.pkt->stream_index)) {
+        mixer->Packet(*t, j.pkt, j.out);
+        av_packet_unref(j.pkt);
+        continue;
+      }
     std::optional<double> at;
     if (oas && j.pkt->stream_index == ai && j.pkt->pts != AV_NOPTS_VALUE)
       at = seg.Map(double(j.pkt->pts) * av_q2d(as->time_base));
@@ -257,6 +419,7 @@ std::string Run(const ExportOptions& o, const std::function<void(double)>& progr
   drain_decoder();
   CheckAv(avcodec_send_frame(j.enc, nullptr), "finish encoding");
   drain_encoder();
+  if (mixer) mixer->Flush(true, j.out);
   CheckAv(av_write_trailer(j.out), "finish MP4");
   progress(1);
   return "";

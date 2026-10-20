@@ -15,12 +15,15 @@ struct ExportOptions {
   int bitrate_mbps = 20;
   bool watermark = true;
   int audio = 0;              // which audio track to keep (0 = the mix of everything), -1 = none
+  // When set, overrides `audio`: a volume per separate track (gains[0] for track 1, the game, gains[1] for
+  // track 2, the mic...), 0 = left out, 1 = as recorded. The kept tracks are mixed into one.
+  std::vector<float> gains;
   bool vertical = false;      // crop to 9:16 for phones
   double crop_x = 0.5;        // where the vertical crop sits, 0 = left edge, 1 = right edge
 };
 
 // Cuts, scales and watermarks a clip on the GPU (hardware decode, video processor, watermark, hardware
-// encode) and copies one audio track as is. Runs at the lowest GPU priority so a game keeps its frames.
+// encode) and copies one audio track as is, or mixes the separate tracks at their own volumes. Runs at the lowest GPU priority so a game keeps its frames.
 // Returns "" or what went wrong; a failed or cancelled export leaves no file.
 std::string ExportClip(const ExportOptions& o, const std::function<void(double)>& progress,
                        const std::atomic<bool>& cancel);

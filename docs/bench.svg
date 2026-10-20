@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16181f"/>
+      <stop offset="1" stop-color="#0c0d11"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.85" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#e83030" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#e83030" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="360" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="360" rx="24" fill="url(#grid)"/>
+  <rect width="1280" height="360" rx="24" fill="url(#glow)"/>
+
+  <text x="64" y="74" fill="#f1f2f6" font-size="30" font-weight="700">What recording costs a game</text>
+  <text x="64" y="108" fill="#a3a9b8" font-size="18">Average fps of a synthetic game, RTX 3060, Clip recording 1080p60 at the lowest GPU priority</text>
+
+  <g transform="translate(64 150)">
+    <text x="0" y="22" fill="#f1f2f6" font-size="19" font-weight="600">GPU with headroom</text>
+    <text x="0" y="46" fill="#666c7b" font-size="15">144 fps game</text>
+    <rect x="260" y="2" width="760" height="22" rx="6" fill="#2a2f3a"/>
+    <rect x="260" y="2" width="753" height="22" rx="6" fill="#4a505e"/>
+    <text x="1036" y="20" fill="#a3a9b8" font-size="17">142.6 off</text>
+    <rect x="260" y="32" width="759" height="22" rx="6" fill="#e83030"/>
+    <text x="1036" y="50" fill="#f1f2f6" font-size="17" font-weight="600">143.7 recording</text>
+  </g>
+
+  <g transform="translate(64 244)">
+    <text x="0" y="22" fill="#f1f2f6" font-size="19" font-weight="600">Budget GPU, maxed out</text>
+    <text x="0" y="46" fill="#666c7b" font-size="15">45 fps game, GPU at 100%</text>
+    <rect x="260" y="2" width="760" height="22" rx="6" fill="#2a2f3a"/>
+    <rect x="260" y="2" width="760" height="22" rx="6" fill="#4a505e"/>
+    <text x="1036" y="20" fill="#a3a9b8" font-size="17">45.1 off</text>
+    <rect x="260" y="32" width="740" height="22" rx="6" fill="#e83030"/>
+    <text x="1036" y="50" fill="#f1f2f6" font-size="17" font-weight="600">43.9 recording</text>
+  </g>
+</svg>

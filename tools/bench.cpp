@@ -9,6 +9,7 @@
 #include <numeric>
 
 #include "../src/export.h"
+#include "../src/preview.h"
 #include "../src/session.h"
 #include "../src/voice.h"
 
@@ -192,6 +193,12 @@ int main(int argc, char** argv) {
                              0, kW, kH, nullptr, nullptr, wc.hInstance, nullptr);
   ShowWindow(wnd, SW_SHOWNOACTIVATE);
 
+  if (argc > 3 && std::string_view(argv[1]) == "preview") {  // clip_bench preview in.mp4 outdir
+    const int64_t t = QpcNow();
+    const auto err = MakePreview(argv[2], argv[3]);
+    std::printf("preview: %s in %.2f s\n", err.empty() ? "ok" : err.c_str(), double(QpcNow() - t) / double(QpcFreq()));
+    return err.empty() ? 0 : 1;
+  }
   if (argc > 1 && std::string_view(argv[1]) == "voice") {  // listen for the phrase for a few seconds
     {
       VoiceSave v([](double ago) { std::printf("heard it, began %.1f s ago\n", ago); },
@@ -214,6 +221,12 @@ int main(int argc, char** argv) {
     }
     o.target_bytes = argc > 5 ? int64_t(atof(argv[5]) * 1e6) : 0;
     o.audio = argc > 6 ? atoi(argv[6]) : 0;
+    if (argc > 6 && argv[6][0] == 'g')  // g1:0.5 = game as recorded, mic at half
+      for (std::string_view g = argv[6] + 1; !g.empty();) {
+        const auto one = g.substr(0, g.find(':'));
+        o.gains.push_back(float(atof(std::string(one).c_str())));
+        g.remove_prefix(std::min(g.size(), one.size() + 1));
+      }
     o.vertical = argc > 7;
     o.crop_x = argc > 7 ? atof(argv[7]) : 0.5;
     if (argc > 8) {  // also print the clip info the editor gets
