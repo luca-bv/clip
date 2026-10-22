@@ -33,7 +33,10 @@ struct Picture {
     f->format = AV_PIX_FMT_YUVJ420P;
     f->width = w;
     f->height = h;
-    av_frame_get_buffer(f, 32);
+    if (av_frame_get_buffer(f, 32) < 0) {
+      av_frame_free(&f);
+      throw std::runtime_error("out of memory");
+    }
     for (int y = 0; y < h; y++) memset(f->data[0] + y * f->linesize[0], 16, w);
     for (int p = 1; p < 3; p++)
       for (int y = 0; y < h / 2; y++) memset(f->data[p] + y * f->linesize[p], 128, w / 2);
@@ -72,9 +75,17 @@ void WriteJpeg(Picture& pic, const std::filesystem::path& file) {
     err = "encode JPEG";
   else {
     const auto tmp = std::filesystem::path(file).concat(L".part");
-    std::ofstream(tmp, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(p->data), p->size);
+    bool ok;
+    {
+      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+      ok = bool(out.write(reinterpret_cast<const char*>(p->data), p->size));
+    }
     std::error_code ec;
-    std::filesystem::rename(tmp, file, ec);
+    if (ok) std::filesystem::rename(tmp, file, ec);
+    if (!ok || ec) {  // a truncated strip.jpg would count as done for good
+      err = "write preview";
+      std::filesystem::remove(tmp, ec);
+    }
   }
   av_packet_free(&p);
   avcodec_free_context(&e);
@@ -85,7 +96,7 @@ void WriteJpeg(Picture& pic, const std::filesystem::path& file) {
 std::string MakePreview(const std::filesystem::path& clip, const std::filesystem::path& dir) {
   try {
     Decoder d;
-    CheckAv(avformat_open_input(&d.fmt, Utf8(clip.wstring()).c_str(), nullptr, nullptr), "open clip");
+    CheckAv(OpenClip(&d.fmt, Utf8(clip.wstring()).c_str()), "open clip");
     CheckAv(avformat_find_stream_info(d.fmt, nullptr), "read clip");
     d.vi = av_find_best_stream(d.fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     CheckAv(d.vi, "find video");
@@ -113,6 +124,14 @@ std::string MakePreview(const std::filesystem::path& clip, const std::filesystem
     int tile = 0, keys = 0;
     bool thumbed = false;
     AVFrame* prev = nullptr;
+    struct Cleanup {
+      SwsContext*& sws;
+      AVFrame*& prev;
+      ~Cleanup() {
+        sws_freeContext(sws);
+        av_frame_free(&prev);
+      }
+    } cleanup{sws, prev};
     auto fill = [&](double upto) {  // tiles (and the thumbnail) whose time comes before `upto` get `prev`
       if (!prev) return;
       for (; tile < kStripTiles && (tile + 0.5) * dur / kStripTiles < upto; tile++)
@@ -140,7 +159,6 @@ std::string MakePreview(const std::filesystem::path& clip, const std::filesystem
     WriteJpeg(thumb, dir / L"thumb.jpg");
     std::ofstream(dir / L"duration.txt") << dur << " " << keys;  // distinct pictures in the strip
     WriteJpeg(strip, dir / L"strip.jpg");  // last: its presence means the previews are done
-    sws_freeContext(sws);
     return "";
   } catch (const std::exception& e) {
     return e.what();

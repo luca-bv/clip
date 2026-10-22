@@ -59,8 +59,12 @@ void VoiceSave::Loop() {
     // The session can end by itself (a device change, a long silence); start it again until told to stop.
     while (WaitForSingleObject(stop_, 1000) == WAIT_TIMEOUT)
       if (ended.exchange(false)) {
-        Log("voice: session ended, restarting");
-        session.StartAsync().get();
+        try {
+          session.StartAsync().get();
+          Log("voice: session ended, restarted");
+        } catch (const winrt::hresult_error&) {  // no microphone right now (unplugged): try again in a second
+          ended = true;
+        }
       }
     try {
       session.StopAsync().get();

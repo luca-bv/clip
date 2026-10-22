@@ -102,6 +102,21 @@ struct Mixer {
 
   Mixer(AVFormatContext* in, AVFormatContext* out, const std::vector<std::pair<int, float>>& want, const Segments& s)
       : seg(s) {
+    try {
+      Open(in, out, want);
+    } catch (...) {  // the destructor won't run
+      Free();
+      throw;
+    }
+  }
+  ~Mixer() { Free(); }
+  void Free() {
+    for (auto& t : tracks) avcodec_free_context(&t.dec);
+    avcodec_free_context(&enc);
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+  }
+  void Open(AVFormatContext* in, AVFormatContext* out, const std::vector<std::pair<int, float>>& want) {
     for (auto [i, gain] : want) {
       const AVCodecParameters* p = in->streams[i]->codecpar;
       const AVCodec* c = avcodec_find_decoder(p->codec_id);
@@ -112,10 +127,10 @@ struct Mixer {
         continue;
       }
       AVCodecContext* d = avcodec_alloc_context3(c);
+      tracks.push_back({i, gain, d, 0});  // owned from here, so it's freed if opening fails
       CheckAv(avcodec_parameters_to_context(d, p), "audio format");
       d->pkt_timebase = in->streams[i]->time_base;
       CheckAv(avcodec_open2(d, c, nullptr), "open audio decoder");
-      tracks.push_back({i, gain, d, 0});
     }
     if (tracks.empty()) throw std::runtime_error("no audio to mix");
     const AVCodec* ec = avcodec_find_encoder(AV_CODEC_ID_AAC);
@@ -133,12 +148,6 @@ struct Mixer {
     st->time_base = enc->time_base;
     base = std::llround(seg.keep.front().first * sr);
     for (auto& t : tracks) t.upto = base;
-  }
-  ~Mixer() {
-    for (auto& t : tracks) avcodec_free_context(&t.dec);
-    avcodec_free_context(&enc);
-    av_frame_free(&frame);
-    av_packet_free(&pkt);
   }
   Track* For(int stream) {
     for (auto& t : tracks)
@@ -212,7 +221,7 @@ struct Mixer {
 
 std::string Run(const ExportOptions& o, const std::function<void(double)>& progress, const std::atomic<bool>& cancel) {
   Job j;
-  CheckAv(avformat_open_input(&j.in, Utf8(o.in.wstring()).c_str(), nullptr, nullptr), "open clip");
+  CheckAv(OpenClip(&j.in, Utf8(o.in.wstring()).c_str()), "open clip");
   CheckAv(avformat_find_stream_info(j.in, nullptr), "read clip");
   const int vi = av_find_best_stream(j.in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
   CheckAv(vi, "find video");
@@ -428,17 +437,21 @@ std::string Run(const ExportOptions& o, const std::function<void(double)>& progr
 
 std::string ExportClip(const ExportOptions& o, const std::function<void(double)>& progress,
                        const std::atomic<bool>& cancel) {
+  ExportOptions part = o;  // written aside and renamed when done, so a crash can't leave a broken clip
+  part.out += L".part";
   std::string err;
   try {
-    err = Run(o, progress, cancel);
+    err = Run(part, progress, cancel);
   } catch (const winrt::hresult_error& e) {
     err = winrt::to_string(e.message());
   } catch (const std::exception& e) {
     err = e.what();
   }
+  std::error_code ec;
+  if (err.empty()) std::filesystem::rename(part.out, o.out, ec);
+  if (ec) err = "rename failed: " + ec.message();
   if (!err.empty()) {
-    std::error_code ec;
-    std::filesystem::remove(o.out, ec);
+    std::filesystem::remove(part.out, ec);
     if (err != "cancelled") Log("export failed: {}", err);
   }
   return err;
@@ -451,7 +464,7 @@ ClipInfo ReadClipInfo(const std::filesystem::path& clip) {
   AVPacket* pkt = av_packet_alloc();
   AVFrame* frame = av_frame_alloc();
   try {
-    CheckAv(avformat_open_input(&in, Utf8(clip.wstring()).c_str(), nullptr, nullptr), "open clip");
+    CheckAv(OpenClip(&in, Utf8(clip.wstring()).c_str()), "open clip");
     CheckAv(avformat_find_stream_info(in, nullptr), "read clip");
     info.duration = in->duration > 0 ? double(in->duration) / AV_TIME_BASE : 0;
     int ai = -1;

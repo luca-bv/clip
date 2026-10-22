@@ -31,7 +31,8 @@ namespace json = winrt::Windows::Data::Json;
 
 namespace {
 enum : UINT {
-  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL, WM_PREVIEW_READY, WM_PASTE_KEY
+  WM_TRAY = WM_APP + 1, WM_GAME_EXIT, WM_WINDOW_CLOSED, WM_SAVED, WM_TAP_PICKED, WM_EXPORT_PROGRESS, WM_EXPORT_DONE, WM_CLIP_INFO, WM_GAMES_READY, WM_VOICE_SAVE, WM_VOICE_FAIL, WM_PREVIEW_READY, WM_PASTE_KEY,
+  WM_BROWSE_FOLDER
 };
 // Discord application whose name Discord shows as "Playing …". Empty turns the Discord activity off.
 constexpr char kDiscordAppId[] = "1560105311728308347";
@@ -65,6 +66,8 @@ struct {
   NOTIFYICONDATAW nid{};
   Config cfg;
   fs::path cfg_path;
+  std::string cfg_written;  // config.toml as Clip last wrote it, so the watcher skips Clip's own saves
+  bool cfg_broken = false;  // config.toml didn't load: back it up before writing over it
   std::string hotkey;  // currently registered
   std::unique_ptr<Session> session;
   HANDLE proc = nullptr, exit_wait = nullptr;
@@ -86,7 +89,6 @@ struct {
   bool page_picking = false;  // the settings window is capturing a new shortcut
   int tap_picker = 0;         // raw input listener while settings captures a double-tap key
   fs::path last_clip;
-  bool balloon_shows_clip = false;  // clicking the current notification opens last_clip
   std::wstring session_title;       // the game's own name, for file names and Discord
   int64_t session_since = 0;        // unix time the recording started
   std::unique_ptr<DiscordPresence> discord;
@@ -122,15 +124,13 @@ void SettingsSay(const std::string& type, const char* key, const std::string& va
 void OpenSettings();
 std::wstring GameName(DWORD pid, const std::string& exe);
 
-bool Contains(const std::vector<std::string>& v, const std::string& s) { return std::ranges::find(v, s) != v.end(); }
-
-fs::path KnownFolder(REFKNOWNFOLDERID id) {
-  PWSTR p = nullptr;
-  fs::path r;
-  if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &p))) r = p;
-  CoTaskMemFree(p);
-  return r;
+void PostTable(const toml::table& t) {  // to the page, as JSON
+  std::stringstream ss;
+  ss << toml::json_formatter{t};
+  SettingsPost(ss.str());
 }
+
+bool Contains(const std::vector<std::string>& v, const std::string& s) { return std::ranges::find(v, s) != v.end(); }
 
 std::string ExeName(DWORD pid) {
   HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -196,7 +196,6 @@ void UpdateTip() {
 
 void Balloon(const std::wstring& title, const std::wstring& text, bool warning = true) {
   Log("{}: {}", Utf8(title), Utf8(text));
-  g.balloon_shows_clip = false;
   g.nid.uFlags = NIF_INFO;
   g.nid.dwInfoFlags = warning ? NIIF_WARNING : NIIF_INFO;
   wcsncpy_s(g.nid.szInfoTitle, title.c_str(), _TRUNCATE);
@@ -247,7 +246,9 @@ void ShowLastClip() {
 // ---- config ----
 
 fs::path ClipsFolder() {
-  return g.cfg.clips_folder.empty() ? KnownFolder(FOLDERID_Videos) / L"Clip" : fs::path(Wide(g.cfg.clips_folder));
+  if (g.cfg.clips_folder.empty()) return KnownFolder(FOLDERID_Videos) / L"Clip";
+  fs::path p = fs::path(Wide(g.cfg.clips_folder)).lexically_normal();
+  return p.has_relative_path() && !p.has_filename() ? p.parent_path() : p;  // "D:\Clips\" -> "D:\Clips"
 }
 
 Config ParseConfig(const std::string& text) {
@@ -371,7 +372,7 @@ toml::table ConfigTable(const Config& c) {
 
 void SaveConfig() {
   const toml::table t = ConfigTable(g.cfg);
-  std::ofstream f(g.cfg_path, std::ios::trunc);
+  std::stringstream f;
   f << "# Clip settings. Edits apply while Clip runs; fps, max_height and bitrate_mbps from the next game.\n"
        "# hotkey: e.g. \"Alt+F8\", \"Ctrl+Shift+S\". double_tap: a key tapped twice saves too, e.g. \"RCtrl\", \"\" = off.\n"
        "# clips_folder: empty = Videos\\Clip. Easier: Clip's settings window (tray icon, or Clip in the Start menu).\n"
@@ -387,6 +388,29 @@ void SaveConfig() {
        "#     Backspace, Up, Down, Left, Right, LMB, RMB, MMB, Mouse4, Mouse5, WheelUp, WheelDown,\n"
        "#     or Mouse for the movement pad. x, y, w, h: position and size in key widths. label: text shown.\n\n"
     << t << "\n";
+  if (std::exchange(g.cfg_broken, false)) {  // keep the edit that didn't load instead of losing it
+    std::error_code ec;
+    fs::copy_file(g.cfg_path, fs::path(g.cfg_path) += L".bad", fs::copy_options::overwrite_existing, ec);
+    Log("config.toml didn't load; saved a copy as config.toml.bad");
+  }
+  // Written aside and swapped in, so a crash mid-write can't leave an empty config.toml.
+  fs::path tmp = g.cfg_path;
+  tmp += L".tmp";
+  {
+    std::ofstream out(tmp, std::ios::trunc);
+    out << f.str();
+    if (!out.flush()) return Log("can't write {}", Utf8(tmp.wstring()));
+  }
+  std::error_code ec;
+  if (!MoveFileExW(tmp.c_str(), g.cfg_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    // Open in something that won't share it for a swap (an editor, a scanner): write it in place instead.
+    Log("can't swap in config.toml ({}); writing it in place", GetLastError());
+    fs::remove(tmp, ec);
+    std::ofstream out(g.cfg_path, std::ios::trunc);
+    out << f.str();
+    if (!out.flush()) return Log("can't write config.toml");
+  }
+  g.cfg_written = f.str();
 }
 
 const std::pair<const char*, UINT> kNamedKeys[] = {{"Insert", VK_INSERT}, {"Home", VK_HOME},       {"End", VK_END},
@@ -507,7 +531,7 @@ void ApplyConfig() {
     }
     if (!g.hotkey_error.empty()) Balloon(L"Shortcut not working", Wide(g.hotkey_error) + L" Pick another in settings.");
   }
-  SetRunAtLogin(g.cfg.start_with_windows);
+  if (!g.cfg_broken) SetRunAtLogin(g.cfg.start_with_windows);  // unknown while config.toml doesn't load
   SyncDoubleTap();
   SyncVoice();
   SyncDiscord();
@@ -531,12 +555,25 @@ void LoadConfig() {
   }
   std::stringstream ss;
   ss << f.rdbuf();
-  try {
-    g.cfg = ParseConfig(ss.str());
-  } catch (const toml::parse_error& e) {
-    return Balloon(L"Settings not loaded", L"config.toml: " + Wide(std::string(e.description())));
+  const std::string text = ss.str();
+  if (!g.cfg_written.empty() && !g.cfg_broken && text == g.cfg_written) return;  // Clip's own save, applied
+  std::string err;
+  if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
+    err = "the file is empty";
+  } else {
+    try {
+      g.cfg = ParseConfig(text);
+    } catch (const toml::parse_error& e) {
+      err = std::string(e.description());
+    }
   }
-  if (ss.str().find("[overlay") == std::string::npos) SaveConfig();  // older file: add the overlay section to edit
+  if (!err.empty()) {  // keep going on the settings in use (the defaults at startup), so the shortcut still works
+    g.cfg_broken = true;
+    Balloon(L"Settings not loaded", L"config.toml: " + Wide(err) + L". Clip keeps its current settings until it's fixed.");
+    return ApplyConfig();
+  }
+  g.cfg_broken = false;
+  if (text.find("[overlay") == std::string::npos) SaveConfig();  // older file: add the overlay section to edit
   ApplyConfig();
 }
 
@@ -683,7 +720,8 @@ void StartSession(HWND w, DWORD pid, const std::string& exe) {
     Log("can't record {}: {}", exe, err);
     if (g.warned.insert(exe).second)
       Balloon(L"Can't record " + Wide(exe),
-              Wide(err) + L"\nIf the game runs as administrator, run Clip as administrator too.");
+              // Not "run Clip as administrator": elevated, it would load DLLs and settings any app can change.
+              Wide(err) + L"\nGames that run as administrator can't be recorded.");
     return UpdateTip();
   }
   g.proc = OpenProcess(SYNCHRONIZE, FALSE, pid);
@@ -970,7 +1008,7 @@ fs::path CacheDir(const fs::path& clip) {
   std::error_code ec;
   uint64_t h = 1469598103934665603ull;
   auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-  for (unsigned char ch : Lower(Utf8(clip.wstring()))) mix(ch);
+  for (unsigned char ch : Lower(Utf8(clip.lexically_normal().wstring()))) mix(ch);  // same clip, same key
   mix(fs::file_size(clip, ec));
   mix(uint64_t(fs::last_write_time(clip, ec).time_since_epoch().count()));
   return CacheRoot() / std::format(L"{:016x}", h);
@@ -1004,7 +1042,11 @@ void PreviewLoop() {
     std::error_code ec;
     const fs::path dir = CacheDir(job.first);
     if (!fs::exists(dir / L"strip.jpg", ec) && fs::exists(job.first, ec))
-      if (const auto err = MakePreview(job.first, dir); !err.empty()) Log("preview {}: {}", Utf8(job.first.filename().wstring()), err);
+      if (const auto err = MakePreview(job.first, dir); !err.empty()) {
+        Log("preview {}: {}", Utf8(job.first.filename().wstring()), err);
+        fs::create_directories(dir, ec);
+        std::ofstream(dir / L"failed");  // so listing the clips doesn't queue it again until tomorrow
+      }
     PostMessageW(g.wnd, WM_PREVIEW_READY, 0, LPARAM(new std::string(job.second)));
   }
 }
@@ -1024,12 +1066,34 @@ void StopPreviews() {
   pv.cv.notify_all();
   if (pv.thread.joinable()) pv.thread.join();
 }
-// Previews of clips untouched for two months go; they're remade if the clip is opened again.
-void PruneCache() {
+// The clips in the clips folder: <root>/<game>/<clip>.mp4, and loose ones in <root>.
+template <class F>
+void ForEachClip(const fs::path& root, F f) {
   std::error_code ec;
-  const auto old = fs::file_time_type::clock::now() - std::chrono::hours(24 * 60);
+  for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+       it != fs::recursive_directory_iterator(); it.increment(ec)) {
+    if (it.depth() > 1) it.disable_recursion_pending();
+    if (it->is_regular_file(ec)) f(*it);
+  }
+}
+
+// At startup: previews of clips that are gone (deleted, renamed, re-saved) go, and so do .part files a quit
+// or crash left mid-save.
+void PruneCache(const fs::path& root) {
+  const auto now = fs::file_time_type::clock::now();
+  std::set<fs::path> keep;
+  ForEachClip(root, [&](const fs::directory_entry& e) {
+    std::error_code ec;
+    const bool part = e.path().extension() == L".part", ours = Lower(Utf8(e.path().stem().extension().wstring())) == ".mp4";
+    if (!part) keep.insert(CacheDir(e.path()).filename());
+    else if (ours && e.last_write_time(ec) < now - std::chrono::minutes(1)) fs::remove(e.path(), ec);  // not a save running now
+  });
+  if (keep.empty()) return;  // the clips drive isn't there yet (a USB or network drive at login): keep everything
+  std::error_code ec;
+  const auto recent = now - std::chrono::hours(24);  // a clip saved meanwhile
   for (auto& e : fs::directory_iterator(CacheRoot(), ec))
-    if (e.is_directory(ec) && e.last_write_time(ec) < old) fs::remove_all(e.path(), ec);
+    if (e.is_directory(ec) && !keep.contains(e.path().filename()) && e.last_write_time(ec) < recent)
+      fs::remove_all(e.path(), ec);
 }
 toml::table PreviewInfo(const fs::path& dir) {
   std::error_code ec;
@@ -1055,16 +1119,15 @@ void SendClips() {
   };
   std::vector<Item> items;
   const fs::path root = ClipsFolder();
-  std::error_code ec;
-  for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
-       it != fs::recursive_directory_iterator(); it.increment(ec)) {
-    if (it.depth() > 1) it.disable_recursion_pending();
-    if (!it->is_regular_file(ec) || Lower(Utf8(it->path().extension().wstring())) != ".mp4") continue;
-    const auto when = std::chrono::clock_cast<std::chrono::system_clock>(it->last_write_time(ec));
-    items.push_back({Utf8(fs::relative(it->path(), root, ec).generic_wstring()),
-                     Utf8(it->path().parent_path().filename().wstring()), int64_t(it->file_size(ec)),
+  // ponytail: scans on the UI thread; move to a worker if libraries of many thousands of clips stall the window.
+  ForEachClip(root, [&](const fs::directory_entry& e) {
+    std::error_code ec;
+    if (Lower(Utf8(e.path().extension().wstring())) != ".mp4") return;
+    const auto when = std::chrono::clock_cast<std::chrono::system_clock>(e.last_write_time(ec));
+    items.push_back({Utf8(e.path().lexically_relative(root).generic_wstring()),
+                     Utf8(e.path().parent_path().filename().wstring()), int64_t(e.file_size(ec)),
                      std::chrono::duration_cast<std::chrono::milliseconds>(when.time_since_epoch()).count()});
-  }
+  });
   std::ranges::sort(items, [](auto& a, auto& b) { return a.ms > b.ms; });
   toml::array list;
   for (auto& i : items) {  // clips sit in a folder per exe; the page shows the game's own name
@@ -1072,15 +1135,16 @@ void SendClips() {
     toml::table c{{"path", i.rel}, {"folder", i.game}, {"game", known ? known->name : i.game},
                   {"size", i.size}, {"time", i.ms}};
     const fs::path clip = root / Wide(i.rel);
-    const toml::table p = PreviewInfo(CacheDir(clip));
-    if (!p.contains("strip")) QueuePreview(clip, i.rel, false);  // newest first: the list is sorted
+    const fs::path dir = CacheDir(clip);
+    const toml::table p = PreviewInfo(dir);
+    std::error_code ec;
+    const bool failed = fs::last_write_time(dir / L"failed", ec) > fs::file_time_type::clock::now() - std::chrono::hours(24);
+    if (!p.contains("strip") && (ec || !failed)) QueuePreview(clip, i.rel, false);  // newest first; a failure, daily
     for (auto& [k, v] : p) c.insert(k, v);
     list.push_back(std::move(c));
   }
   toml::table t{{"type", "clips"}, {"host", Utf8(std::wstring(L"https://") + kClipsHost + L"/")}, {"items", list}};
-  std::stringstream ss;
-  ss << toml::json_formatter{t};
-  SettingsPost(ss.str());
+  PostTable(t);
 }
 
 // Quality presets for exports and clipboard copies: "original", "discord" (fits 10 MB), "1080" or "720".
@@ -1126,9 +1190,7 @@ struct ExportJob {
 void ExportDoneToPage(const std::string& page_path, const std::string& err, bool copied, const std::string& file) {
   if (page_path.empty()) return;
   toml::table t{{"type", "exportDone"}, {"path", page_path}, {"error", err}, {"copied", copied}, {"file", file}};
-  std::stringstream ss;
-  ss << toml::json_formatter{t};
-  SettingsPost(ss.str());
+  PostTable(t);
 }
 
 void StartExport(ExportJob job) {
@@ -1208,13 +1270,20 @@ void CopyClip(const fs::path& clip, ExportOptions edit, std::string page_path = 
   StartExport(std::move(job));
 }
 
+// The page lets go of a clip it was playing a moment after it says so: retry for up to a second.
+bool Retry(auto&& op) {
+  for (int i = 0; i < 10; i++, Sleep(100))
+    if (op()) return true;
+  return false;
+}
+
 void RecycleFile(const fs::path& p) {
   std::wstring from = p.wstring() + L'\0';  // double-null terminated
   SHFILEOPSTRUCTW op{};
   op.wFunc = FO_DELETE;
   op.pFrom = from.c_str();
   op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-  if (SHFileOperationW(&op) != 0) Log("couldn't move {} to the Recycle Bin", Utf8(p.wstring()));
+  if (!Retry([&] { return SHFileOperationW(&op) == 0; })) Log("couldn't move {} to the Recycle Bin", Utf8(p.wstring()));
 }
 
 void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
@@ -1238,9 +1307,10 @@ void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
   } else if (name == "renameClip") {
     std::wstring stem = Wide(winrt::to_string(m.GetNamedString(L"name", L"")));
     std::erase_if(stem, [](wchar_t c) { return c < 32 || std::wcschr(L"<>:\"/\\|?*", c); });
+    const fs::path to = clip->parent_path() / (stem + L".mp4");
     std::error_code ec;
-    if (!stem.empty() && !fs::exists(clip->parent_path() / (stem + L".mp4"), ec))
-      fs::rename(*clip, clip->parent_path() / (stem + L".mp4"), ec);
+    if (!stem.empty() && !fs::exists(to, ec) && !Retry([&] { return fs::rename(*clip, to, ec), !ec; }))
+      Log("couldn't rename {}: {}", Utf8(clip->filename().wstring()), ec.message());
     SendClips();
   } else if (name == "exportClip") {
     const std::string page_path = winrt::to_string(m.GetNamedString(L"path", L""));
@@ -1261,7 +1331,7 @@ void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
       std::string json{std::istreambuf_iterator<char>(f), {}};
       if (!json.empty()) return SettingsPost(json);
     }
-    std::thread([path = *clip, rel, dir] {
+    Background([path = *clip, rel, dir] {
       const ClipInfo info = ReadClipInfo(path);
       std::string peaks;
       peaks.reserve(info.peaks.size() * 5);
@@ -1281,7 +1351,7 @@ void OnGalleryAction(const std::string& name, const json::JsonObject& m) {
         std::ofstream(dir / L"info.json", std::ios::binary | std::ios::trunc) << json;
       }
       PostMessageW(g.wnd, WM_CLIP_INFO, 0, LPARAM(new std::string(std::move(json))));
-    }).detach();
+    });
   }
 }
 
@@ -1348,7 +1418,7 @@ void OnCommand(UINT id) {
         const std::string exe = g.session->exe;
         ChangeConfig([&](Config& c) {
           std::erase(c.always_record, exe);
-          c.never_record.push_back(exe);
+          if (!Contains(c.never_record, exe)) c.never_record.push_back(exe);
         });
       }
       return;
@@ -1356,7 +1426,7 @@ void OnCommand(UINT id) {
       const std::string exe = g.last_app_exe;
       ChangeConfig([&](Config& c) {
         std::erase(c.never_record, exe);
-        c.always_record.push_back(exe);
+        if (!Contains(c.always_record, exe)) c.always_record.push_back(exe);
       });
       DWORD pid = 0;
       GetWindowThreadProcessId(g.last_app_wnd, &pid);
@@ -1463,16 +1533,12 @@ void SettingsPush() {
                 {"folder", Utf8(ClipsFolder().wstring())},
                 {"discord_available", kDiscordAppId[0] != 0},
                 {"voice_error", g.voice_error}};
-  std::stringstream ss;
-  ss << toml::json_formatter{t};
-  SettingsPost(ss.str());
+  PostTable(t);
 }
 
 void SettingsSay(const std::string& type, const char* key, const std::string& value) {
   toml::table t{{"type", type}, {key, value}};
-  std::stringstream ss;
-  ss << toml::json_formatter{t};
-  SettingsPost(ss.str());
+  PostTable(t);
 }
 
 // One setting from the page, run through ParseConfig so it's checked and clamped like a file edit.
@@ -1578,6 +1644,14 @@ void OnSettingsMessage(const std::string& text) {
   if (type == "shown") return SendClips();  // reopened: catch up on clips saved while hidden
   if (type == "log") return Log("page: {}", winrt::to_string(m.GetNamedString(L"text", L"")));
   if (type == "set") return SetFromPage(winrt::to_string(m.GetNamedString(L"key", L"")), m.GetNamedValue(L"value"));
+  if (type == "hidden") {  // closed mid-pick: put the shortcut back, stop waiting for a double-tap
+    StopTapPicker();
+    if (std::exchange(g.page_picking, false)) {
+      g.hotkey.clear();
+      ApplyConfig();
+    }
+    return;
+  }
   if (type != "action") return;
   const std::string name = winrt::to_string(m.GetNamedString(L"name", L""));
   if (name == "pickHotkey") {
@@ -1598,7 +1672,7 @@ void OnSettingsMessage(const std::string& text) {
   } else if (name == "cancelDoubleTap") {
     StopTapPicker();
   } else if (name == "browseFolder") {
-    BrowseFolder();
+    PostMessageW(g.wnd, WM_BROWSE_FOLDER, 0, 0);  // a modal dialog mustn't run inside a WebView2 event
   } else if (name == "openFolder") {
     OnCommand(ID_OPEN_FOLDER);
   } else if (name == "editOverlay") {
@@ -1638,7 +1712,6 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TRAY:
       if (lp == WM_LBUTTONUP) OpenSettings();
       else if (lp == WM_RBUTTONUP) ShowMenu();
-      else if (lp == NIN_BALLOONUSERCLICK && g.balloon_shows_clip) ShowLastClip();
       return 0;
     case WM_EXPORT_PROGRESS:
       SettingsPost(std::format(R"({{"type":"exportProgress","p":{}}})", int(wp)));
@@ -1659,9 +1732,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       toml::table t = PreviewInfo(CacheDir(ClipsFolder() / Wide(*rel)));
       t.insert("type", "preview");
       t.insert("path", *rel);
-      std::stringstream ss;
-      ss << toml::json_formatter{t};
-      SettingsPost(ss.str());
+      PostTable(t);
       return 0;
     }
     case WM_CLIP_INFO: {
@@ -1680,6 +1751,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_HOTKEY: SaveClip(); return 0;
+    case WM_BROWSE_FOLDER: BrowseFolder(); return 0;
     case WM_VOICE_SAVE:  // the clip ends where the phrase began
       Log("voice: heard the phrase");
       SaveClip(double(wp) / 1000);
@@ -1738,8 +1810,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       if (s->err.empty()) {  // the chime and notice already went out when the key was pressed
         g.last_clip = s->file;
         if (g.cfg.copy_to_clipboard) CopyClip(s->file, {.watermark = g.cfg.watermark});
-        std::error_code ec;
-        QueuePreview(s->file, Utf8(fs::relative(s->file, ClipsFolder(), ec).generic_wstring()), true);
+        QueuePreview(s->file, Utf8(s->file.lexically_relative(ClipsFolder()).generic_wstring()), true);
         SettingsSay("saved", "file", Utf8(s->file.filename().wstring()));
         SendClips();
       } else {
@@ -1786,6 +1857,14 @@ std::string Utf8(std::wstring_view w) {
   std::string s(WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), nullptr, 0, nullptr, nullptr), '\0');
   WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), s.data(), int(s.size()), nullptr, nullptr);
   return s;
+}
+
+fs::path KnownFolder(const GUID& id) {
+  PWSTR p = nullptr;
+  fs::path r;
+  if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &p))) r = p;
+  CoTaskMemFree(p);
+  return r;
 }
 
 std::wstring Wide(std::string_view s) {
@@ -1841,7 +1920,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
       FindFirstChangeNotificationW(cfg_dir.c_str(), FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME);
   const DWORD n_handles = watch != INVALID_HANDLE_VALUE ? 1 : 0;
   CheckForeground();
-  std::thread(PruneCache).detach();
+  Background([root = ClipsFolder()] { PruneCache(root); });
 
   for (MSG msg;;) {
     const DWORD r = MsgWaitForMultipleObjects(n_handles, &watch, FALSE, INFINITE, QS_ALLINPUT);
@@ -1857,6 +1936,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
         StopPreviews();
         g.discord.reset();
         StopSession();
+        WaitForBackground();  // a clip still being written
         UnhookWinEvent(fg_hook);
         WatchLocation(0);
         Shell_NotifyIconW(NIM_DELETE, &g.nid);

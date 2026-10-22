@@ -221,7 +221,14 @@ LRESULT CALLBACK CanvasProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
   auto units = [&] { return D2D1_POINT_2F{(x - ed->origin.x) / ed->u, (y - ed->origin.y) / ed->u}; };
   switch (msg) {
     case WM_PAINT:
-      Paint();
+      try {  // nothing may throw out of a window procedure
+        Paint();
+      } catch (const winrt::hresult_error& e) {
+        static bool logged = false;
+        if (!std::exchange(logged, true)) Log("overlay editor: can't draw: {}", winrt::to_string(e.message()));
+        ed->rt = nullptr;  // start over with a new target next time
+        ed->brush = nullptr;
+      }
       ValidateRect(w, nullptr);
       return 0;
     case WM_ERASEBKGND: return 1;
@@ -459,12 +466,14 @@ void ShowOverlayEditor(const OverlayConfig& cfg, std::function<void(const Overla
   }();
   (void)registered;
 
+  winrt::com_ptr<ID2D1Factory> factory;
+  if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr, factory.put_void())))
+    return Log("overlay editor: no Direct2D");
   ed = new Editor;
   ed->cfg = cfg;
   std::erase_if(ed->cfg.keys, [](OverlayKey& k) { return (k.key = CanonicalKey(k.key)).empty(); });
   ed->save = std::move(save);
-  winrt::check_hresult(
-      D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr, ed->factory.put_void()));
+  ed->factory = std::move(factory);
   ed->painter = std::make_unique<OverlayPainter>(ed->cfg);
 
   ed->wnd = CreateWindowExW(0, L"ClipOverlayEditor", L"Clip input overlay", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,

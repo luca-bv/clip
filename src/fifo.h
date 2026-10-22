@@ -8,6 +8,7 @@
 constexpr int kRate = 48000;
 constexpr int kFrame = 1024;             // AAC frame
 constexpr int64_t kJitter = kRate / 50;  // timestamps within 20 ms of the expected position count as contiguous
+constexpr int64_t kKeep = kRate * 2;     // samples kept while nobody reads
 
 // Stereo float samples placed on the session timeline (sample index at kRate). A capture thread
 // writes packets with timestamps; the mixer reads fixed frames, getting silence where nothing arrived.
@@ -17,6 +18,11 @@ class SampleFifo {
   void Write(int64_t at, const float* s, uint32_t frames) {
     std::lock_guard l(m_);
     if (start_ < 0) start_ = at;
+    if (at - (start_ + int64_t(buf_.size() / 2)) > kKeep) {  // a jump (the PC slept): start over, don't pad it
+      buf_.clear();
+      buf_.shrink_to_fit();
+      start_ = at;
+    }
     const int64_t end = start_ + int64_t(buf_.size() / 2);
     if (std::abs(at - end) <= kJitter) at = end;
     if (at > end) buf_.resize(buf_.size() + size_t(at - end) * 2, 0.f);
@@ -24,11 +30,16 @@ class SampleFifo {
     if (skip >= frames) return;
     if (s) buf_.insert(buf_.end(), s + skip * 2, s + frames * 2);
     else buf_.resize(buf_.size() + size_t(frames - skip) * 2, 0.f);
-    if (buf_.size() > kRate * 4) {  // nobody is reading; keep 2 s
-      const size_t drop = buf_.size() - kRate * 4;
+    if (buf_.size() > kKeep * 2) {  // nobody is reading; keep 2 s
+      const size_t drop = buf_.size() - kKeep * 2;
       buf_.erase(buf_.begin(), buf_.begin() + drop);
       start_ += int64_t(drop / 2);
     }
+  }
+
+  size_t capacity() {  // floats allocated, for tests
+    std::lock_guard l(m_);
+    return buf_.capacity();
   }
 
   // Copy timeline [at, at + kFrame) into `out` (kFrame * 2 floats), silence where nothing was captured.

@@ -10,6 +10,7 @@ using winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 namespace {
 constexpr int kPoolFrames = 3;    // WGC buffers: one we hold, one in flight, one being written
 constexpr int kEncodeFrames = 24;  // NV12 surfaces the encoder can hold at once
+constexpr int kMaxWidth = 4096;    // widest H.264 frame NVENC, AMF and QSV encode
 const auto kFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
 com_ptr<ID3D11Texture2D> TextureOf(const Direct3D11CaptureFrame& f) {
@@ -62,6 +63,10 @@ VideoCapture::VideoCapture(HWND hwnd, const Config& cfg, PacketRing& ring, int64
     if (sz.Width <= 0 || sz.Height <= 0) throw std::runtime_error("window has no size");
     h_ = std::min(sz.Height, cfg.max_height) & ~1;
     w_ = int(int64_t(sz.Width) * h_ / sz.Height) & ~1;
+    if (w_ > kMaxWidth) {  // super-ultrawide: H.264 encoders stop at 4096 wide
+      w_ = kMaxWidth;
+      h_ = int(int64_t(sz.Height) * w_ / sz.Width) & ~1;
+    }
     OpenEncoder(cfg);
     track_ = ring_.AddTrack("Video", enc_, true);
     StartCapture(item);
@@ -111,21 +116,18 @@ void VideoCapture::OpenEncoder(const Config& cfg) {
 void VideoCapture::StartCapture(GraphicsCaptureItem item) {
   pool_size_ = item.Size();
   pool_ = Direct3D11CaptureFramePool::CreateFreeThreaded(rt_dev_, kFormat, kPoolFrames, pool_size_);
-  pool_.FrameArrived([this](const Direct3D11CaptureFramePool& pool, auto&&) {
-    try {
-      auto f = pool.TryGetNextFrame();
-      if (!f) return;
-      auto cs = f.ContentSize();
-      std::lock_guard l(frame_m_);
-      latest_ = f;
-      if (cs != pool_size_) {  // window resized: new buffers, the processor letterboxes
-        pool_size_ = cs;
-        pool.Recreate(rt_dev_, kFormat, kPoolFrames, cs);
-      }
-    } catch (...) {
-    }
+  // WGC calls these on its own threads, possibly while StopCapture runs: the gate makes StopCapture wait
+  // for one in progress, and keeps a closed pool's late frames out.
+  gate_ = std::make_shared<Gate>();
+  gate_->owner = this;
+  pool_.FrameArrived([gate = gate_](const Direct3D11CaptureFramePool& pool, auto&&) {
+    std::lock_guard g(gate->m);
+    if (gate->owner) gate->owner->OnFrame(pool);
   });
-  closed_token_ = item.Closed([this](auto&&, auto&&) { on_closed_(); });
+  closed_token_ = item.Closed([gate = gate_](auto&&, auto&&) {
+    std::lock_guard g(gate->m);
+    if (gate->owner) gate->owner->on_closed_();
+  });
   session_ = pool_.CreateCaptureSession(item);
   try {
     session_.IsBorderRequired(false);
@@ -139,7 +141,27 @@ void VideoCapture::StartCapture(GraphicsCaptureItem item) {
   item_ = item;
 }
 
+void VideoCapture::OnFrame(const Direct3D11CaptureFramePool& pool) {
+  try {
+    auto f = pool.TryGetNextFrame();
+    if (!f) return;
+    auto cs = f.ContentSize();
+    if (cs.Width <= 0 || cs.Height <= 0) return;  // minimized or mid-change: keep the last real frame
+    std::lock_guard l(frame_m_);
+    latest_ = f;
+    if (cs != pool_size_) {  // window resized: new buffers, the processor letterboxes
+      pool_size_ = cs;
+      pool.Recreate(rt_dev_, kFormat, kPoolFrames, cs);
+    }
+  } catch (...) {
+  }
+}
+
 void VideoCapture::StopCapture() {
+  if (gate_) {
+    std::lock_guard g(gate_->m);
+    gate_->owner = nullptr;
+  }
   try {
     if (session_) session_.Close();
     if (pool_) pool_.Close();
@@ -172,6 +194,7 @@ void VideoCapture::Loop() {
   const int64_t f = QpcFreq();
   // Stats for the log: ticks encoded, ticks skipped because we fell behind, time spent encoding.
   int64_t encoded = 0, skipped = 0, busy = 0, since = QpcNow();
+  int64_t fails = 0, fail_window = 0;
   for (int64_t n = 0; !stop_;) {
     const int64_t due = t0_ + n * f / fps_;
     const int64_t wait = due - QpcNow();
@@ -187,9 +210,14 @@ void VideoCapture::Loop() {
       continue;
     }
     const int64_t start = QpcNow();
+    // A frame that fails now and then (a window being swapped) is skipped; a second's worth of failures within
+    // two seconds restarts the session, which loses the buffer.
     if (!Encode(n)) {
-      failed_ = true;
-      break;
+      if (start - fail_window > 2 * f) fail_window = start, fails = 0;
+      if (++fails >= fps_) {
+        failed_ = true;
+        break;
+      }
     }
     busy += QpcNow() - start;
     encoded++;
@@ -214,13 +242,13 @@ bool VideoCapture::Encode(int64_t pts) {
     overlay = overlay_;
   }
   if (!frame) return true;  // nothing captured yet
-  const int64_t frame_time = frame.SystemRelativeTime().count();
-  const bool repeat = frame_time == last_frame_time_;  // the game hasn't presented since last tick
-  if (repeat) repeats_++;
-  last_frame_time_ = frame_time;
 
   AVFrame* out = av_frame_alloc();
   try {
+    const int64_t frame_time = frame.SystemRelativeTime().count();  // throws once the pool is closed
+    const bool repeat = frame_time == last_frame_time_;  // the game hasn't presented since last tick
+    if (repeat) repeats_++;
+    last_frame_time_ = frame_time;
     // Same picture: hand the encoder the surface we already converted, no GPU work for this tick.
     if (repeat && !overlay && last_ && last_->buf[0]) {
       CheckAv(av_frame_ref(out, last_), "reuse frame");
@@ -235,6 +263,10 @@ bool VideoCapture::Encode(int64_t pts) {
     tex->GetDesc(&d);
     auto cs = frame.ContentSize();
     const UINT cw = std::min<UINT>(cs.Width, d.Width), ch = std::min<UINT>(cs.Height, d.Height);
+    if (!cw || !ch) {  // nothing to show; Fit would divide by zero
+      av_frame_free(&out);
+      return true;
+    }
     if (!vp_ || d.Width != vp_w_ || d.Height != vp_h_) CreateProcessor(d.Width, d.Height);
 
     CheckAv(av_hwframe_get_buffer(hw_frames_, out, 0), "get encoder surface");
@@ -359,8 +391,14 @@ void VideoCapture::DrawOverlay(InputOverlay& overlay) {
   }
   d2d_->SetTarget(d2d_target_.get());
   d2d_->BeginDraw();
-  overlay.Draw(d2d_.get(), d2d_target_->GetSize());
-  const HRESULT hr = d2d_->EndDraw();
+  HRESULT hr;
+  try {
+    overlay.Draw(d2d_.get(), d2d_target_->GetSize());
+    hr = d2d_->EndDraw();
+  } catch (const winrt::hresult_error& e) {  // the overlay's own resources: same as a failed draw
+    d2d_->EndDraw();
+    hr = e.code();
+  }
   d2d_->SetTarget(nullptr);
   if (FAILED(hr)) {  // device trouble: rebuild next frame rather than stop recording
     Log("overlay draw failed (0x{:08x})", uint32_t(hr));

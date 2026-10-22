@@ -67,5 +67,13 @@ int main() {
     Expect(f, 0, [](int64_t) { return 0.f; });
     Expect(f, kFrame, same);
   }
+  {  // a jump of an hour (the PC slept) starts over instead of allocating the gap
+    SampleFifo f;
+    f.Write(0, Ramp(0, 480).data(), 480);
+    const int64_t later = int64_t(kRate) * 3600;
+    f.Write(later, Ramp(later, 2048).data(), 2048);
+    assert(f.capacity() < size_t(kRate) * 8);
+    Expect(f, later, same);
+  }
   std::puts("fifo ok");
 }

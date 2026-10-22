@@ -39,6 +39,7 @@ class VideoCapture {
   void CreateDevice(int gpu_priority);
   void OpenEncoder(const Config& cfg);
   void StartCapture(winrt::Windows::Graphics::Capture::GraphicsCaptureItem item);
+  void OnFrame(const winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool& pool);  // WGC's thread
   void StopCapture();
   void Loop();
   bool Encode(int64_t pts);
@@ -76,6 +77,11 @@ class VideoCapture {
   winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool_{nullptr};
   winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
   winrt::event_token closed_token_{};
+  struct Gate {  // one per capture: WGC callbacks run only while owner is set
+    std::mutex m;
+    VideoCapture* owner = nullptr;
+  };
+  std::shared_ptr<Gate> gate_;
 
   std::mutex frame_m_;
   winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame latest_{nullptr};

@@ -24,6 +24,15 @@ inline void CheckAv(int r, const char* what) {
   throw std::runtime_error(std::format("{}: {}", what, buf));
 }
 
+// Opens a clip as MP4 and from disk only, so a file someone drops in the clips folder reaches no other demuxer.
+inline int OpenClip(AVFormatContext** fmt, const char* path) {
+  AVDictionary* o = nullptr;
+  av_dict_set(&o, "protocol_whitelist", "file", 0);
+  const int r = avformat_open_input(fmt, path, av_find_input_format("mp4"), &o);
+  av_dict_free(&o);
+  return r;
+}
+
 // Encoded packets of every track, trimmed to the clip length. Times are relative to session start.
 class PacketRing {
  public:

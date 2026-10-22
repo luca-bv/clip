@@ -27,10 +27,7 @@ std::string Key(std::string exe) {
 void Load() {
   namespace fs = std::filesystem;
   namespace json = winrt::Windows::Data::Json;
-  PWSTR local = nullptr;
-  SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local);
-  const fs::path file = fs::path(local ? local : L".") / L"Clip" / L"discord-games.json";
-  CoTaskMemFree(local);
+  const fs::path file = KnownFolder(FOLDERID_LocalAppData) / L"Clip" / L"discord-games.json";
   std::error_code ec;
   fs::create_directories(file.parent_path(), ec);
   const bool fresh =
@@ -68,6 +65,7 @@ void Load() {
 }  // namespace
 
 void LoadGameList(std::function<void()> ready) {
+  // Not Background(): quitting shouldn't wait on a download that can't be cancelled.
   std::thread([ready = std::move(ready)] {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     winrt::init_apartment();

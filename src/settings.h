@@ -5,7 +5,8 @@
 #include <functional>
 
 // The app window: ui/index.html (built into the exe) in WebView2, talking to the app in JSON messages.
-// Closed, it stays hidden and ready for 10 minutes; a game starting frees it at once.
+// Closed, it stays hidden and ready for 10 minutes; a game starting frees it at once. Closing also sends
+// on_message {"type":"hidden"}.
 void ShowSettings(std::function<void(const std::string& json)> on_message);
 void SettingsPost(const std::string& json);  // dropped while the window is closed
 HWND SettingsWindow();                       // nullptr while closed

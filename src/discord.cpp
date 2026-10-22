@@ -13,16 +13,12 @@
 #include "common.h"
 #include "games.h"
 
+namespace json = winrt::Windows::Data::Json;
+
 namespace {
-std::string Json(const std::string& s) {
-  std::string r = "\"";
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\') r += '\\', r += char(c);
-    else if (c < 0x20) r += std::format("\\u{:04x}", c);
-    else r += char(c);
-  }
-  return r + "\"";
-}
+std::string Json(const std::string& s) { return winrt::to_string(json::JsonValue::CreateStringValue(Wide(s)).Stringify()); }
+
+constexpr uint32_t kMaxFrame = 64 * 1024;  // Discord's replies are a few KB; anything bigger isn't Discord
 
 // One connection to Discord's IPC pipe. Frames are {op, length} little-endian, then JSON.
 class Pipe {
@@ -30,7 +26,7 @@ class Pipe {
   bool Open() {
     for (int i = 0; i < 10 && h_ == INVALID_HANDLE_VALUE; i++)
       h_ = CreateFileW(std::format(L"\\\\.\\pipe\\discord-ipc-{}", i).c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                       nullptr, OPEN_EXISTING, 0, nullptr);
+                       nullptr, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
     return h_ != INVALID_HANDLE_VALUE;
   }
   ~Pipe() {
@@ -46,7 +42,7 @@ class Pipe {
     DWORD n;
     if (!WriteFile(h_, frame.data(), DWORD(frame.size()), &n, nullptr)) return false;
     uint32_t head[2];
-    if (!ReadFile(h_, head, 8, &n, nullptr) || n != 8) return false;
+    if (!ReadFile(h_, head, 8, &n, nullptr) || n != 8 || head[1] > kMaxFrame) return false;
     std::string body(head[1], '\0');
     for (DWORD got = 0; got < head[1]; got += n)
       if (!ReadFile(h_, body.data() + got, head[1] - got, &n, nullptr) || !n) return false;
@@ -101,11 +97,7 @@ void DiscordPresence::Refresh() {
 // Clip's own icon (the one uploaded to its Discord app), for the badge on the game's icon.
 void DiscordPresence::LoadIcon() {
   icon_loaded_ = true;
-  namespace json = winrt::Windows::Data::Json;
-  PWSTR local = nullptr;
-  SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local);
-  const std::filesystem::path file = std::filesystem::path(local ? local : L".") / L"Clip" / L"discord-app.json";
-  CoTaskMemFree(local);
+  const std::filesystem::path file = KnownFolder(FOLDERID_LocalAppData) / L"Clip" / L"discord-app.json";
   const std::wstring url = std::format(L"https://discord.com/api/v9/applications/{}/rpc", Wide(app_id_));
   if (FAILED(URLDownloadToFileW(nullptr, url.c_str(), file.c_str(), 0, nullptr))) Log("discord: no app info");
   std::ifstream f(file, std::ios::binary);
@@ -134,6 +126,16 @@ std::string DiscordPresence::Activity(const std::string& game, const std::string
       Json(name + " with Clip"), Json("Clipping " + name), since, assets);
 }
 void DiscordPresence::Loop() {
+  try {
+    Run();
+  } catch (const winrt::hresult_error& e) {  // presence is optional: stop it rather than take Clip down
+    Log("discord: stopped: {}", winrt::to_string(e.message()));
+  } catch (const std::exception& e) {
+    Log("discord: stopped: {}", e.what());
+  }
+}
+
+void DiscordPresence::Run() {
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
   winrt::init_apartment();
   int nonce = 0;

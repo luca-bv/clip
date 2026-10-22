@@ -61,7 +61,8 @@ class OverlayPainter {
   float width_ = 0, height_ = 0, pad_size_ = 1;
   D2D1_COLOR_F idle_, pressed_, text_, pressed_text_, border_, trail_, click_;
 
-  ID2D1DeviceContext* res_dc_ = nullptr;  // resources below belong to this context at this key size
+  winrt::com_ptr<ID2D1DeviceContext> res_dc_;  // resources below belong to this context at this key size; held,
+                                               // so a new context can't reuse its address and look like it
   float res_u_ = 0;
   winrt::com_ptr<ID2D1SolidColorBrush> brush_;
   winrt::com_ptr<ID2D1StrokeStyle> round_;

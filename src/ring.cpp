@@ -34,7 +34,7 @@ void PacketRing::Drain(int track, AVCodecContext* enc) {
     std::lock_guard l(m_);
     auto& t = *tracks_[track];
     t.pkts.push_back(p);
-    if (t.video) Evict(Us(t, p->dts));
+    Evict(Us(t, t.video ? p->dts : p->pts));  // audio too, so it can't pile up if video never starts
   }
 }
 
@@ -173,7 +173,7 @@ std::string PacketRing::Export(int64_t end_us, int seconds, const fs::path& file
 
   if (err.empty()) {  // make sure it opens before calling it saved
     AVFormatContext* ic = nullptr;
-    if (avformat_open_input(&ic, tmp8.c_str(), nullptr, nullptr) < 0 || avformat_find_stream_info(ic, nullptr) < 0 ||
+    if (OpenClip(&ic, tmp8.c_str()) < 0 || avformat_find_stream_info(ic, nullptr) < 0 ||
         ic->nb_streams != outs.size())
       err = "saved file doesn't open";
     avformat_close_input(&ic);

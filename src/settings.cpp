@@ -24,6 +24,9 @@ struct {
   std::map<std::wstring, std::filesystem::path> want, served;  // host -> folder: asked for, and what the view has
 } s;
 
+constexpr wchar_t kOrigin[] = L"https://clip.example/", kPage[] = L"https://clip.example/index.html";
+bool FromPage(const wchar_t* uri) { return uri && std::wstring_view(uri).starts_with(kOrigin); }
+
 constexpr UINT_PTR kForgetTimer = 1;
 constexpr UINT kKeepHiddenMs = 10 * 60 * 1000;  // a closed window stays ready this long, then frees its memory
 
@@ -42,20 +45,14 @@ void ApplyServe() {
   }
 }
 
-std::filesystem::path AppData(const wchar_t* sub) {
-  PWSTR p = nullptr;
-  std::filesystem::path r;
-  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &p))) r = std::filesystem::path(p) / L"Clip" / sub;
-  CoTaskMemFree(p);
-  return r;
-}
+std::filesystem::path AppData(const wchar_t* sub) { return KnownFolder(FOLDERID_LocalAppData) / L"Clip" / sub; }
 
 // The page and its libraries live in Clip.exe (clip.rc) and are served from this folder as https://clip.example/.
 constexpr struct {
   int id;
   const wchar_t* path;
 } kUiFiles[] = {{100, L"index.html"},         {101, L"vendor/wavesurfer.min.js"}, {102, L"vendor/regions.min.js"},
-                {103, L"vendor/timeline.min.js"}, {104, L"vendor/zoom.min.js"},   {105, L"vendor/hover.min.js"}};
+                {104, L"vendor/zoom.min.js"},   {105, L"vendor/hover.min.js"}};
 
 std::filesystem::path WriteUi() {
   const auto dir = AppData(L"ui");
@@ -91,15 +88,42 @@ void OnController(ICoreWebView2Controller* c) {
     st->put_IsZoomControlEnabled(FALSE);
     if (auto st3 = st.try_as<ICoreWebView2Settings3>()) st3->put_AreBrowserAcceleratorKeysEnabled(FALSE);
   }
+  // Only Clip's own page runs here: nothing else navigates in, opens a window or is dropped onto it.
+  if (auto c4 = s.controller.try_as<ICoreWebView2Controller4>()) c4->put_AllowExternalDrop(FALSE);
   EventRegistrationToken token;
+  s.view->add_NavigationStarting(
+      Callback<ICoreWebView2NavigationStartingEventHandler>(
+          [](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+            LPWSTR uri = nullptr;
+            if (FAILED(args->get_Uri(&uri)) || !FromPage(uri)) args->put_Cancel(TRUE);
+            CoTaskMemFree(uri);
+            return S_OK;
+          })
+          .Get(),
+      &token);
+  s.view->add_NewWindowRequested(
+      Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+          [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+            return args->put_Handled(TRUE);
+          })
+          .Get(),
+      &token);
   s.view->add_WebMessageReceived(
       Callback<ICoreWebView2WebMessageReceivedEventHandler>(
           [](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
-            LPWSTR json = nullptr;
-            if (SUCCEEDED(args->get_WebMessageAsJson(&json))) {
+            LPWSTR source = nullptr, json = nullptr;
+            const bool ours = SUCCEEDED(args->get_Source(&source)) && FromPage(source);
+            CoTaskMemFree(source);
+            if (ours && SUCCEEDED(args->get_WebMessageAsJson(&json))) {
               const std::string m = Utf8(json);
               CoTaskMemFree(json);
-              if (s.on_message) s.on_message(m);
+              try {  // nothing may throw back into WebView2
+                if (s.on_message) s.on_message(m);
+              } catch (const winrt::hresult_error& e) {
+                Log("settings: message failed: {}", winrt::to_string(e.message()));
+              } catch (const std::exception& e) {
+                Log("settings: message failed: {}", e.what());
+              }
             }
             return S_OK;
           })
@@ -110,7 +134,7 @@ void OnController(ICoreWebView2Controller* c) {
   ApplyServe();
   if (auto v3 = s.view.try_as<ICoreWebView2_3>())
     v3->SetVirtualHostNameToFolderMapping(L"clip.example", WriteUi().c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
-  s.view->Navigate(L"https://clip.example/index.html");
+  s.view->Navigate(kPage);
 }
 
 void StartWebView() {
@@ -161,6 +185,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:  // hide, so opening it again is instant; the page pauses itself
       ShowWindow(w, SW_HIDE);
       SettingsPost(R"({"type":"hidden"})");
+      if (s.on_message) s.on_message(R"({"type":"hidden"})");  // the app drops anything the page was waiting on
       SetTimer(w, kForgetTimer, kKeepHiddenMs, nullptr);
       return 0;
     case WM_TIMER:

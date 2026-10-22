@@ -13,11 +13,11 @@ class DiscordPresence {
   ~DiscordPresence();
   // `exe` finds the game in Discord's list; `game` is the name to use when it isn't there. "" clears it.
   void Show(const std::string& game, const std::string& exe, int64_t since_unix);
-  void Clear() { Show("", "", 0); }
   void Refresh();  // send again, e.g. once the game list has the game's icon
 
  private:
   void Loop();
+  void Run();
   void LoadIcon();
   std::string Activity(const std::string& game, const std::string& exe, int64_t since);
 

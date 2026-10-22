@@ -14,13 +14,25 @@ esac
 
 app="$(cygpath -u "$LOCALAPPDATA")/Clip/app"
 shortcut="$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/Clip.lnk"
+# Paths reach PowerShell as environment variables, never inside its command text, so a ' in a path is fine.
 ps() { powershell.exe -NoProfile -NonInteractive -Command "$1"; }
+export CLIP_EXE="$(cygpath -w "$app/Clip.exe")"
 
-# Clip holds its own files open, so stop it first. Fails harmlessly if it isn't running.
-taskkill //IM Clip.exe //F >/dev/null 2>&1 && sleep 1 || true
+# Clip holds its own files open, so stop it first: only the Clip.exe installed here, not anything else named Clip.
+ps 'Get-Process Clip -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $env:CLIP_EXE } | Stop-Process -Force' || true
+sleep 1
+# Moves the installed Clip aside, so nothing is deleted while it's still running (as administrator, say).
+move_aside() {
+  rm -rf "$app.old"
+  if [[ -d "$app" ]] && ! mv "$app" "$app.old" 2>/dev/null; then
+    echo "Clip is still running. Quit it from its tray icon and run this again." >&2
+    exit 1
+  fi
+}
 
 if [[ "${1:-}" == "--uninstall" ]]; then
-  rm -rf "$app" "$shortcut"
+  move_aside
+  rm -rf "$app.old" "$shortcut"
   reg delete 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' //v Clip //f >/dev/null 2>&1 || true
   echo "Clip removed. Your clips (Videos\\Clip) and settings (%APPDATA%\\Clip) are still there."
   exit 0
@@ -30,16 +42,17 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "Downloading Clip..."
 curl -fL --retry 3 --progress-bar -o "$tmp/Clip.zip" "$url"
-ps "Expand-Archive -Force -LiteralPath '$(cygpath -w "$tmp/Clip.zip")' -DestinationPath '$(cygpath -w "$tmp/Clip")'"
+CLIP_ZIP="$(cygpath -w "$tmp/Clip.zip")" CLIP_DEST="$(cygpath -w "$tmp/Clip")" \
+  ps 'Expand-Archive -Force -LiteralPath $env:CLIP_ZIP -DestinationPath $env:CLIP_DEST'
 [[ -f "$tmp/Clip/Clip.exe" ]] || { echo "The download didn't contain Clip.exe." >&2; exit 1; }
 
-rm -rf "$app"
+move_aside
 mkdir -p "$(dirname "$app")"
-mv "$tmp/Clip" "$app"
+mv "$tmp/Clip" "$app" || { [[ -d "$app.old" ]] && mv "$app.old" "$app"; exit 1; }
+rm -rf "$app.old"
 
-ps "\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('$(cygpath -w "$shortcut")');
-    \$s.TargetPath = '$(cygpath -w "$app/Clip.exe")'; \$s.Save()"
-ps "Start-Process -FilePath '$(cygpath -w "$app/Clip.exe")'"
+# Clip adds itself to the Start menu and to startup when it runs.
+ps 'Start-Process -FilePath $env:CLIP_EXE'
 
 echo "Clip is installed in $(cygpath -w "$app") and running in the tray."
 echo "It's in the Start menu and starts with Windows. Press F8 in a game to save a clip."

@@ -1,5 +1,9 @@
 name: build
 on: [push, pull_request, workflow_dispatch]
+# A newer push replaces a build still running, so an older build can't finish last and become "latest".
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows:
@@ -7,7 +11,7 @@ jobs:
     permissions:
       contents: write  # publish the latest-build release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Get FFmpeg (LGPL, shared)
         shell: pwsh
@@ -28,7 +32,7 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item build/Release/Clip.exe, build/Release/*.dll, LICENSE, README.md dist/
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: Clip
           path: dist
@@ -41,6 +45,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           Compress-Archive dist/* Clip.zip
-          gh release delete latest-build --yes --cleanup-tag 2>$null
-          gh release create latest-build Clip.zip --target ${{ github.sha }} --latest `
-            --title "Latest build" --notes "Built from ${{ github.sha }}. Install or update: see README."
+          $notes = "Built from ${{ github.sha }}. Install or update: see README."
+          # Updated in place rather than deleted and recreated, so the download link never 404s.
+          gh release view latest-build *> $null
+          if ($LASTEXITCODE -eq 0) {
+            git tag -f latest-build ${{ github.sha }}
+            git push -f origin refs/tags/latest-build
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            gh release upload latest-build Clip.zip --clobber
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            gh release edit latest-build --latest --notes $notes
+          } else {
+            gh release create latest-build Clip.zip --target ${{ github.sha }} --latest --title "Latest build" --notes $notes
+          }

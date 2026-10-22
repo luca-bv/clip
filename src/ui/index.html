@@ -64,9 +64,6 @@ input[type=number] { width: 72px; }
 .switch:checked::after { transform: translateX(16px); }
 .hint { color: var(--dim); }
 .err { color: var(--err); }
-.seg { display: inline-flex; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
-.seg button { border: 0; background: transparent; color: var(--dim); padding: 4px 10px; border-radius: 6px; }
-.seg button.on { background: var(--hover); color: var(--text); }
 
 /* pages */
 main { overflow-y: auto; padding: 22px 26px 30px; }
@@ -1880,9 +1877,9 @@ $("#del-dlg").onclick = (e) => { if (e.target === e.currentTarget) closeDelete()
 $("#del-ok").onclick = () => {
   const p = editing.path;
   $("#del-dlg").hidden = true;
-  act("deleteClip", { path: p });
   edits.delete(p);
-  closeClip();
+  closeClip();  // let go of the file first, or it can't be moved to the Recycle Bin
+  act("deleteClip", { path: p });
 };
 $("#back").onclick = closeClip;
 

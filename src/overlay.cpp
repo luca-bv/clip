@@ -1,6 +1,7 @@
 #include "overlay.h"
 
 #include <algorithm>
+#include <charconv>
 
 namespace {
 const std::pair<const char*, UINT> kNamedKeys[] = {
@@ -59,12 +60,8 @@ std::string CanonicalKey(const std::string& s) {
 D2D1_COLOR_F ParseColor(const std::string& hex, D2D1_COLOR_F fallback) {
   if ((hex.size() != 7 && hex.size() != 9) || hex[0] != '#') return fallback;
   uint32_t v = 0;
-  for (size_t i = 1; i < hex.size(); i++) {
-    const char c = hex[i];
-    const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
-    if (d < 0) return fallback;
-    v = v << 4 | uint32_t(d);
-  }
+  const char* end = hex.data() + hex.size();
+  if (auto [p, ec] = std::from_chars(hex.data() + 1, end, v, 16); ec != std::errc{} || p != end) return fallback;
   if (hex.size() == 7) v = v << 8 | 0xFF;
   return {(v >> 24 & 0xFF) / 255.f, (v >> 16 & 0xFF) / 255.f, (v >> 8 & 0xFF) / 255.f, (v & 0xFF) / 255.f};
 }
@@ -128,7 +125,7 @@ void OverlayPainter::Fill(ID2D1DeviceContext* dc, const D2D1_RECT_F& r, float u,
 }
 
 void OverlayPainter::Draw(ID2D1DeviceContext* dc, D2D1_POINT_2F origin, float u, OverlayInput& in, int64_t now) {
-  if (dc != res_dc_ || u != res_u_) {
+  if (dc != res_dc_.get() || u != res_u_) {
     brush_ = nullptr;
     round_ = nullptr;
     text_format_ = nullptr;
@@ -147,7 +144,7 @@ void OverlayPainter::Draw(ID2D1DeviceContext* dc, D2D1_POINT_2F origin, float u,
     text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    res_dc_ = dc;
+    res_dc_.copy_from(dc);
     res_u_ = u;
   }
   for (size_t i = 0; i < cfg_.keys.size(); i++) {

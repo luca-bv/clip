@@ -59,12 +59,15 @@ com_ptr<IAudioClient> ProcessLoopback(DWORD pid, bool& pcm16) {
   return client;
 }
 
-std::wstring DefaultMicId() {
-  auto devices = winrt::create_instance<IMMDeviceEnumerator>(__uuidof(MMDeviceEnumerator));
-  com_ptr<IMMDevice> dev;
+std::wstring DefaultMicId() {  // "" if there's none; never throws, Sync runs from a window message
   wchar_t* id = nullptr;
   std::wstring r;
-  if (SUCCEEDED(devices->GetDefaultAudioEndpoint(eCapture, eConsole, dev.put())) && SUCCEEDED(dev->GetId(&id))) r = id;
+  try {
+    auto devices = winrt::create_instance<IMMDeviceEnumerator>(__uuidof(MMDeviceEnumerator));
+    com_ptr<IMMDevice> dev;
+    if (SUCCEEDED(devices->GetDefaultAudioEndpoint(eCapture, eConsole, dev.put())) && SUCCEEDED(dev->GetId(&id))) r = id;
+  } catch (const winrt::hresult_error&) {
+  }
   CoTaskMemFree(id);
   return r;
 }
@@ -123,8 +126,13 @@ struct AudioMixer::Source {
     winrt::check_hresult(client->GetService(__uuidof(IAudioCaptureClient), capture.put_void()));
     winrt::check_hresult(client->SetEventHandle(event.get()));
     enc = OpenAac();
-    winrt::check_hresult(client->Start());
-    thread = std::thread(&Source::Loop, this);
+    try {
+      winrt::check_hresult(client->Start());
+      thread = std::thread(&Source::Loop, this);
+    } catch (...) {  // no destructor for a half-built source
+      avcodec_free_context(&enc);
+      throw;
+    }
   }
   ~Source() {
     stop = true;
@@ -248,6 +256,7 @@ void AudioMixer::Loop() {
   for (int64_t k = 0; !stop_;) {  // k = next AAC frame on the session timeline
     Sleep(10);
     const int64_t ready = QpcTo(QpcNow() - t0_, kRate) - kLatency;
+    if (ready - k * kFrame > 2 * kRate) k = ready / kFrame - 1;  // the PC slept: skip the gap, don't encode it
     while ((k + 1) * kFrame <= ready && !stop_) {
       std::ranges::fill(mix, 0.f);
       {

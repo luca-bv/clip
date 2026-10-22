@@ -1,15 +1,19 @@
 #pragma once
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "log.h"
 
 std::string Utf8(std::wstring_view w);
 std::wstring Wide(std::string_view s);
+std::filesystem::path KnownFolder(const GUID& id);  // FOLDERID_*, or "" if Windows doesn't say
 
 // ASCII lowercase; exe names are compared lowercased everywhere.
 inline std::string Lower(std::string s) {
@@ -18,6 +22,23 @@ inline std::string Lower(std::string s) {
 }
 inline std::string Stem(const std::string& exe) {
   return exe.ends_with(".exe") ? exe.substr(0, exe.size() - 4) : exe;
+}
+
+// Work on its own thread that quitting waits for (WaitForBackground), so it never runs into static destruction.
+inline std::atomic<int> g_background{0};
+template <class F>
+void Background(F f) {
+  ++g_background;
+  std::thread([f = std::move(f)]() mutable {
+    {
+      auto run = std::move(f);  // its captures go before quitting can go on
+      run();
+    }
+    if (--g_background == 0) g_background.notify_all();
+  }).detach();
+}
+inline void WaitForBackground() {
+  for (int n; (n = g_background) > 0;) g_background.wait(n);
 }
 
 inline int64_t QpcNow() {
